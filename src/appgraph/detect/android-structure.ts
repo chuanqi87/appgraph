@@ -43,7 +43,7 @@ import {
 } from '../schema';
 import { extractManifest } from '../extractors/android/manifest';
 import { liftNavigation } from '../lift/android-navigation';
-import { harmonyComponentTargetFor, harmonyTargetFor } from '../../migration/capabilities-ext';
+import { harmonyComponentTargetFor, harmonyTargetFor } from './api-capabilities';
 import {
   ModuleRef,
   attributeModule,

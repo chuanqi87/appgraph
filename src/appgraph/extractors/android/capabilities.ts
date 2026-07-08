@@ -1,54 +1,18 @@
 /**
- * Capability vocabulary + platform permission → capability mappings.
+ * Platform permission → capability mappings (Android + HarmonyOS).
  *
- * `Capability` is the cross-platform comparison anchor: page names differ
- * across Android/HarmonyOS/iOS, but "this app can use the camera / run a VPN /
- * post notifications" is platform-neutral and enumerable. The diff stage aligns
- * two app graphs primarily on these capability ids.
+ * The controlled capability vocabulary itself lives in the neutral
+ * `appgraph/capabilities.ts`; this module maps each platform's permission
+ * strings onto those ids. Because both platforms normalize to one capability id,
+ * the diff aligns them directly: Android CAMERA and HarmonyOS CAMERA both become
+ * `capability:camera`.
  *
- * This table IS the deterministic reference asset — it grows over time and its
- * completeness bounds comparison quality. Anything unmapped is surfaced as a
- * coverageWarning rather than silently dropped.
+ * These tables ARE deterministic reference assets — they grow over time and
+ * their completeness bounds comparison quality. Anything unmapped is surfaced as
+ * a coverageWarning rather than silently dropped.
  */
 
-/** Controlled vocabulary. Dotted names namespace a family (e.g. `location.fine`). */
-export const CAPABILITY_IDS = [
-  'network',
-  'network.state',
-  'network.wifi',
-  'internet',
-  'vpn',
-  'location.fine',
-  'location.coarse',
-  'location.background',
-  'camera',
-  'microphone',
-  'notification',
-  'contacts.read',
-  'contacts.write',
-  'phone.call',
-  'phone.state',
-  'sms.send',
-  'sms.receive',
-  'storage.read',
-  'storage.write',
-  'storage.media',
-  'bluetooth',
-  'nfc',
-  'biometric',
-  'background.foreground-service',
-  'background.wakelock',
-  'background.boot',
-  'background.job',
-  'vibrate',
-  'audio.playback',
-] as const;
-export type CapabilityId = (typeof CAPABILITY_IDS)[number];
-
-const CAPABILITY_ID_SET = new Set<string>(CAPABILITY_IDS);
-export function isCapabilityId(value: string): value is CapabilityId {
-  return CAPABILITY_ID_SET.has(value);
-}
+import { CapabilityId } from '../../capabilities';
 
 /**
  * Android `android.permission.*` (and a few component-declared permissions) →

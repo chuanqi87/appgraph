@@ -1,7 +1,7 @@
 /**
  * S1 · permission → capability, the highest-ROT source-side gap from phase 1.
  *
- * Phase 1's M3 only mapped framework/API imports to capabilities (`capabilities-ext`);
+ * Phase 1's M3 only mapped framework/API imports to capabilities (`api-capabilities`);
  * it never parsed AndroidManifest permissions, so the M4 diff missed the entire
  * permission-backed capability family (camera / location / notification / …).
  *
@@ -20,7 +20,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { AppEdge, AppNode, CoverageWarning, makeEdgeId } from '../schema';
 import { extractManifest } from '../extractors/android/manifest';
-import { harmonyTargetFor } from '../../migration/capabilities-ext';
+import { harmonyTargetFor } from './api-capabilities';
 
 /** Directories that never hold shippable app manifests. */
 const EXCLUDED_DIRS = new Set([

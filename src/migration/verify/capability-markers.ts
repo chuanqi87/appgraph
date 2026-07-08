@@ -8,7 +8,7 @@
  * hence its own module rather than living in a parser.
  */
 
-import { CAPABILITY_SPECS, CapabilitySpec } from '../capabilities-ext';
+import { CAPABILITY_SPECS, CapabilitySpec } from '../../appgraph/detect/api-capabilities';
 
 /** HarmonyOS API markers a capability's presence can be detected by. */
 export function capabilityMarkers(spec: CapabilitySpec): string[] {

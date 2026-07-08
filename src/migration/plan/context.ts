@@ -18,7 +18,7 @@
 
 import { AppNode } from '../../appgraph/schema';
 import { Node, NodeKind } from '../../types';
-import { HarmonyTarget, apiToCapability, harmonyTargetFor } from '../capabilities-ext';
+import { HarmonyTarget, apiToCapability, harmonyTargetFor } from '../../appgraph/detect/api-capabilities';
 import { ConstantsFacts } from '../../appgraph/detect/constants';
 import { DiFacts } from '../../appgraph/detect/di';
 import { FlowFacts } from '../../appgraph/detect/flows';

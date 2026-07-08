@@ -1,23 +1,28 @@
 /**
- * M3 · capability layer — the two halves appgraph's `capabilities.ts` is missing.
+ * M3 · API → capability detection + capability → HarmonyOS target-API table.
  *
- * appgraph maps PERMISSIONS → capabilities (both platforms). This adds:
+ * The neutral `capabilities.ts` maps PERMISSIONS → capabilities (both platforms).
+ * This module adds the other two halves:
  *   1. API → capability: which framework/API a module USES, detected from the
  *      code graph's `import` nodes (Retrofit → network, Room → persistence.db,
  *      WorkManager → background.task, …). Emitted as `uses_capability` edges.
  *   2. capability → HarmonyOS target API: the "how do I translate this" side —
  *      the ArkTS/HarmonyOS module + construct mapping the LLM anchors on when it
- *      generates each module. appgraph has nothing on the target-API side.
+ *      generates each module.
  *
- * The capability vocabulary here is a SUPERSET of appgraph's permission
- * capabilities: it reuses the same ids (`network`, `notification`, `camera`, …)
- * so a later cross-platform diff aligns on them, and adds framework/construct
- * capabilities (`persistence.database`, `ui.declarative`, …) that have a target
- * API but no permission behind them.
+ * `CAPABILITY_SPECS` is one indivisible reference asset: each entry couples an
+ * id's `apiPrefixes` (detection) with its `harmony` target (translation) and
+ * `kind`. It lives in the neutral appgraph layer because it produces the app
+ * graph's Capability nodes and is consumed by the neutral detect/ passes; the
+ * migration layer imports its accessors from here. The capability ids are a
+ * SUPERSET of the permission vocabulary — they reuse the same ids (`network`,
+ * `notification`, `camera`, …) so a cross-platform diff aligns on them, and add
+ * framework/construct capabilities (`persistence.database`, `ui.declarative`, …)
+ * that have a target API but no permission behind them.
  */
 
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../appgraph/schema';
-import { Node } from '../types';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../schema';
+import { Node } from '../../types';
 
 /** HarmonyOS translation target for a capability — the LLM's generation anchor. */
 export interface HarmonyTarget {

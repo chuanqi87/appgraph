@@ -20,7 +20,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { CapabilityId } from './extractors/android/capabilities';
+import { CapabilityId } from './capabilities';
 
 export type AppPlatform = 'android' | 'harmony' | 'ios';
 

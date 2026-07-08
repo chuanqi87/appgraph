@@ -16,7 +16,7 @@ import { aggregateModuleDependencies } from '../../src/appgraph/modules/aggregat
 import { computeMigrationOrder } from '../../src/migration/order/topo';
 import { projectFileCoupling } from '../../src/appgraph/community/project';
 import { detectCommunities } from '../../src/appgraph/community/detect';
-import { apiToCapability, harmonyTargetFor } from '../../src/migration/capabilities-ext';
+import { apiToCapability, harmonyTargetFor } from '../../src/appgraph/detect/api-capabilities';
 import { serializeMigrationGraph, hashMigrationGraph } from '../../src/migration/serialize';
 import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
 import { extractModuleSkeleton } from '../../src/appgraph/modules/gradle-ext';

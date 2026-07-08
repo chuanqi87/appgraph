@@ -23,7 +23,7 @@ import { CodeSymbolGraph } from '../appgraph/graph-reader';
 import { buildModuleDependencyGraph } from '../appgraph/modules';
 import { buildCommunityOverlay } from '../appgraph/community';
 import { computeMigrationOrder } from './order/topo';
-import { detectCapabilities } from './capabilities-ext';
+import { detectCapabilities } from '../appgraph/detect/api-capabilities';
 import { detectManifestCapabilities, ModuleRef } from '../appgraph/detect/manifest-capabilities';
 import { buildSemantics } from '../appgraph/detect/semantics';
 import { assignNodesToModules } from '../appgraph/modules/assign';
