@@ -14,7 +14,7 @@ import * as path from 'path';
 import {
   detectManifestCapabilities,
   ModuleRef,
-} from '../../src/migration/detect/manifest-capabilities';
+} from '../../src/appgraph/detect/manifest-capabilities';
 
 function writeManifest(root: string, rel: string, permissions: string[]): void {
   const full = path.join(root, rel);

@@ -12,12 +12,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyMigrationGraph, mergeInto, MigrationGraph } from '../../src/migration/types';
-import { AppNode, AppEdge, makeNodeId, makeEdgeId } from '../../src/migration/schema';
+import { AppNode, AppEdge, makeNodeId, makeEdgeId } from '../../src/appgraph/schema';
 import { MigrationPlan } from '../../src/migration/plan';
 import { UnitContract } from '../../src/migration/plan/contract';
 import { Ledger, LedgerStatus } from '../../src/migration/ledger';
 import { verifyUnit } from '../../src/migration/verify/unit';
-import { canonicalJson } from '../../src/migration/serialize';
+import { canonicalJson } from '../../src/appgraph/serialize';
 
 const MOD_A = 'modA';
 const MOD_B = 'modB';

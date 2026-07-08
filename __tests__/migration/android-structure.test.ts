@@ -13,9 +13,9 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { detectAndroidStructure } from '../../src/migration/detect/android-structure';
-import { ModuleRef } from '../../src/migration/detect/manifest-capabilities';
-import { makeNodeId, screenMatchKey } from '../../src/migration/schema';
+import { detectAndroidStructure } from '../../src/appgraph/detect/android-structure';
+import { ModuleRef } from '../../src/appgraph/detect/manifest-capabilities';
+import { makeNodeId, screenMatchKey } from '../../src/appgraph/schema';
 
 const MANIFEST = `<manifest package="com.example.app">
   <application>

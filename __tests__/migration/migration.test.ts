@@ -11,16 +11,16 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Node, Edge } from '../../src/types';
-import { assignNodesToModules } from '../../src/migration/modules/assign';
-import { aggregateModuleDependencies } from '../../src/migration/modules/aggregate';
+import { assignNodesToModules } from '../../src/appgraph/modules/assign';
+import { aggregateModuleDependencies } from '../../src/appgraph/modules/aggregate';
 import { computeMigrationOrder } from '../../src/migration/order/topo';
-import { projectFileCoupling } from '../../src/migration/community/project';
-import { detectCommunities } from '../../src/migration/community/detect';
+import { projectFileCoupling } from '../../src/appgraph/community/project';
+import { detectCommunities } from '../../src/appgraph/community/detect';
 import { apiToCapability, harmonyTargetFor } from '../../src/migration/capabilities-ext';
 import { serializeMigrationGraph, hashMigrationGraph } from '../../src/migration/serialize';
 import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
-import { extractModuleSkeleton } from '../../src/migration/modules/gradle-ext';
-import { AppNode, AppEdge, makeNodeId, makeEdgeId } from '../../src/migration/schema';
+import { extractModuleSkeleton } from '../../src/appgraph/modules/gradle-ext';
+import { AppNode, AppEdge, makeNodeId, makeEdgeId } from '../../src/appgraph/schema';
 
 function mkNode(id: string, filePath: string, kind: Node['kind'], name: string): Node {
   return {

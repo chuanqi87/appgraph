@@ -23,7 +23,7 @@ import {
   AppNode,
   AppPlatform,
   CoverageWarning,
-} from './schema';
+} from '../appgraph/schema';
 
 export const MIGRATION_GRAPH_SCHEMA_VERSION = 1;
 

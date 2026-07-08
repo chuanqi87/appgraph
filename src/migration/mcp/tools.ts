@@ -13,8 +13,8 @@
 
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { AppNode, slug } from '../schema';
-import { isLayoutHostingEdge } from '../detect/android-structure';
+import { AppNode, slug } from '../../appgraph/schema';
+import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
 import { getLedgerPath, getMigrationDir, getPlanDir, getVerifyUnitsDir } from '../paths';
 import { migrationGraphPath, readMigrationGraph } from '../serialize';
 import { MigrationGraph } from '../types';

@@ -12,12 +12,12 @@
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppNode, slug } from '../schema';
+import { AppNode, slug } from '../../appgraph/schema';
 import { Node } from '../../types';
-import { isLayoutHostingEdge } from '../detect/android-structure';
-import { CodeSymbolGraph } from '../graph-reader';
+import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
+import { CodeSymbolGraph } from '../../appgraph/graph-reader';
 import { getPlanDir } from '../paths';
-import { canonicalJson } from '../serialize';
+import { canonicalJson } from '../../appgraph/serialize';
 import { MigrationGraph } from '../types';
 import {
   AssemblyInput,

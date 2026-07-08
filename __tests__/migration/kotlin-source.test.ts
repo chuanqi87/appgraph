@@ -20,7 +20,7 @@ import {
   sanitizeKotlin,
   superTypes,
   topLevelConstants,
-} from '../../src/migration/detect/kotlin-source';
+} from '../../src/appgraph/detect/kotlin-source';
 
 describe('leadingAnnotations', () => {
   it('extracts the declaration annotations, not field/body ones', () => {

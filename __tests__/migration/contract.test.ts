@@ -10,13 +10,13 @@
 
 import { describe, it, expect } from 'vitest';
 import { emptyMigrationGraph, mergeInto, MigrationGraph, MigrationUnit } from '../../src/migration/types';
-import { AppNode, makeNodeId } from '../../src/migration/schema';
+import { AppNode, makeNodeId } from '../../src/appgraph/schema';
 import { Node } from '../../src/types';
 import { buildAssemblyInput } from '../../src/migration/plan';
 import { buildUnitContracts, checkId, ContractUnitInput } from '../../src/migration/plan/contract';
 import { renderUnitBrief } from '../../src/migration/plan/brief';
-import { canonicalJson } from '../../src/migration/serialize';
-import { CodeSymbolGraph } from '../../src/migration/graph-reader';
+import { canonicalJson } from '../../src/appgraph/serialize';
+import { CodeSymbolGraph } from '../../src/appgraph/graph-reader';
 
 const NET_ID = makeNodeId('android', 'ArchModule', 'module:corenetwork');
 const F_SERVICE = 'core/network/src/main/kotlin/ApiService.kt';

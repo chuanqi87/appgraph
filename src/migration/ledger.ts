@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { canonicalJson } from './serialize';
+import { canonicalJson } from '../appgraph/serialize';
 
 export const LEDGER_SCHEMA_VERSION = 1;
 

@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { makeEdgeId, makeNodeId } from '../../src/migration/schema';
+import { makeEdgeId, makeNodeId } from '../../src/appgraph/schema';
 import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
 import { writeMigrationGraph, migrationGraphPath } from '../../src/migration/serialize';
 import { getMigrationDir, getPlanDir } from '../../src/migration/paths';

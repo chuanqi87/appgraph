@@ -16,7 +16,7 @@
  */
 
 import { ContractCheck } from '../plan/contract';
-import { isNestedType, typePathKey } from '../qualified-name';
+import { isNestedType, typePathKey } from '../../appgraph/qualified-name';
 
 /** Ledger renames split by key shape (bare simple name vs. dotted type-path). */
 export interface RenameMaps {

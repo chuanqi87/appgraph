@@ -28,7 +28,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { AppNode } from '../schema';
+import { AppNode } from '../../appgraph/schema';
 import { MigrationGraph, MigrationOrder } from '../types';
 
 export interface PlanningOptions {

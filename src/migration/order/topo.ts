@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { AppEdge, AppNode } from '../schema';
+import { AppEdge, AppNode } from '../../appgraph/schema';
 import { MigrationOrder, MigrationUnit } from '../types';
 
 export interface OrderResult {

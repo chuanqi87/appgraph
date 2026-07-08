@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { ContractCheck } from '../../src/migration/plan/contract';
-import { typePath, typePathKey, isNestedType } from '../../src/migration/qualified-name';
+import { typePath, typePathKey, isNestedType } from '../../src/appgraph/qualified-name';
 import {
   matchInterface,
   splitRenameMaps,

@@ -21,7 +21,7 @@ import * as path from 'path';
 import { resolveTargetSurface, TargetSurface } from '../../src/migration/verify/target-graph';
 import { interfaceFidelity, verifyMigration } from '../../src/migration/verify/diff';
 import { emptyMigrationGraph, mergeInto, MigrationGraph } from '../../src/migration/types';
-import { AppNode, makeNodeId, capabilityMatchKey } from '../../src/migration/schema';
+import { AppNode, makeNodeId, capabilityMatchKey } from '../../src/appgraph/schema';
 
 const INDEX_ETS = `import { router } from '@kit.ArkUI';
 import { UserService } from '../services/UserService';

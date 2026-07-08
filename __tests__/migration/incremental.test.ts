@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { diffMigrationGraphs } from '../../src/migration/incremental';
 import { emptyMigrationGraph, mergeInto, MigrationGraph } from '../../src/migration/types';
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/migration/schema';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/appgraph/schema';
 
 function mkModule(name: string, symbolCount: number): AppNode {
   const matchKey = `module:${name.replace(/[^a-z0-9]+/gi, '').toLowerCase()}`;

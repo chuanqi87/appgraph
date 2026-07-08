@@ -11,13 +11,13 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { detectResources } from '../../src/migration/detect/resources';
-import { ModuleRef } from '../../src/migration/detect/manifest-capabilities';
-import { buildSemantics } from '../../src/migration/detect/semantics';
-import { CodeSymbolGraph } from '../../src/migration/graph-reader';
-import { buildModuleDependencyGraph } from '../../src/migration/modules';
-import { assignNodesToModules } from '../../src/migration/modules/assign';
-import { AppNode } from '../../src/migration/schema';
+import { detectResources } from '../../src/appgraph/detect/resources';
+import { ModuleRef } from '../../src/appgraph/detect/manifest-capabilities';
+import { buildSemantics } from '../../src/appgraph/detect/semantics';
+import { CodeSymbolGraph } from '../../src/appgraph/graph-reader';
+import { buildModuleDependencyGraph } from '../../src/appgraph/modules';
+import { assignNodesToModules } from '../../src/appgraph/modules/assign';
+import { AppNode } from '../../src/appgraph/schema';
 
 function mkTemp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mig-u6-'));

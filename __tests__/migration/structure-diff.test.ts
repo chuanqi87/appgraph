@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { AppNode } from '../../src/migration/schema';
+import { AppNode } from '../../src/appgraph/schema';
 import { ArkExport } from '../../src/migration/verify/target-graph';
 import { diffScreens, diffEntitySchemas } from '../../src/migration/verify/structure-diff';
 

@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/migration/schema';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/appgraph/schema';
 import { computeMigrationOrder } from '../../src/migration/order/topo';
 import { emptyMigrationGraph, mergeInto, MigrationGraph } from '../../src/migration/types';
 import {

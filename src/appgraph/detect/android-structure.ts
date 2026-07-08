@@ -42,8 +42,8 @@ import {
   screenMatchKey,
 } from '../schema';
 import { extractManifest } from '../extractors/android/manifest';
-import { liftNavigation } from '../lift/navigation';
-import { harmonyComponentTargetFor, harmonyTargetFor } from '../capabilities-ext';
+import { liftNavigation } from '../lift/android-navigation';
+import { harmonyComponentTargetFor, harmonyTargetFor } from '../../migration/capabilities-ext';
 import {
   ModuleRef,
   attributeModule,
@@ -388,7 +388,7 @@ function conventionScreen(
   return node;
 }
 
-/** Module dir from a `<module>/src/...` path (same rule as lift/navigation). */
+/** Module dir from a `<module>/src/...` path (same rule as lift/android-navigation). */
 function moduleOf(relPath: string): string {
   const idx = relPath.indexOf('/src/');
   return idx > 0 ? relPath.slice(0, idx) : 'root';

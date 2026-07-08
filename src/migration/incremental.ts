@@ -12,8 +12,8 @@
  * it: snapshot → rebuild structural stages → diff → report.
  */
 
-import { AppNode } from './schema';
-import { canonicalJson } from './serialize';
+import { AppNode } from '../appgraph/schema';
+import { canonicalJson } from '../appgraph/serialize';
 import { MigrationGraph } from './types';
 
 export interface NodeRef {

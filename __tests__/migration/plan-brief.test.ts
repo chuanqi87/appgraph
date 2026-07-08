@@ -10,12 +10,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { emptyMigrationGraph, mergeInto, MigrationGraph, MigrationUnit } from '../../src/migration/types';
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/migration/schema';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/appgraph/schema';
 import { Node } from '../../src/types';
 import { ModuleBrief, assembleModuleBrief } from '../../src/migration/plan/context';
 import { renderUnitBrief } from '../../src/migration/plan/brief';
 import { buildAssemblyInput } from '../../src/migration/plan';
-import { CodeSymbolGraph } from '../../src/migration/graph-reader';
+import { CodeSymbolGraph } from '../../src/appgraph/graph-reader';
 
 function brief(over: Partial<ModuleBrief> = {}): ModuleBrief {
   return {

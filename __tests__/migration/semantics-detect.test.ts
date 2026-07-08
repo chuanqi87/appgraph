@@ -10,12 +10,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { Node, NodeKind } from '../../src/types';
-import { ReadCode, DetectContext } from '../../src/migration/detect/shared';
-import { detectRoles, aggregateRolesByModule } from '../../src/migration/detect/roles';
-import { detectComposeScreens } from '../../src/migration/detect/compose';
-import { detectEntities } from '../../src/migration/detect/entities';
-import { detectDi } from '../../src/migration/detect/di';
-import { detectFlows } from '../../src/migration/detect/flows';
+import { ReadCode, DetectContext } from '../../src/appgraph/detect/shared';
+import { detectRoles, aggregateRolesByModule } from '../../src/appgraph/detect/roles';
+import { detectComposeScreens } from '../../src/appgraph/detect/compose';
+import { detectEntities } from '../../src/appgraph/detect/entities';
+import { detectDi } from '../../src/appgraph/detect/di';
+import { detectFlows } from '../../src/appgraph/detect/flows';
 
 interface Fixture {
   nodes: Node[];

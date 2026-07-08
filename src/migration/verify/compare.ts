@@ -9,7 +9,7 @@
  * survive a platform migration; capability coverage is the truth).
  */
 
-import { AppGraph, AppNode, AppNodeKind } from '../schema';
+import { AppGraph, AppNode, AppNodeKind } from '../../appgraph/schema';
 
 export interface SetDiff {
   matched: string[];

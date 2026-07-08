@@ -16,14 +16,14 @@
  * external migration agent that consumes these briefs.
  */
 
-import { AppNode } from '../schema';
+import { AppNode } from '../../appgraph/schema';
 import { Node, NodeKind } from '../../types';
 import { HarmonyTarget, apiToCapability, harmonyTargetFor } from '../capabilities-ext';
-import { ConstantsFacts } from '../detect/constants';
-import { DiFacts } from '../detect/di';
-import { FlowFacts } from '../detect/flows';
-import { FieldSchema } from '../detect/entities';
-import { TestContractFacts } from '../detect/tests';
+import { ConstantsFacts } from '../../appgraph/detect/constants';
+import { DiFacts } from '../../appgraph/detect/di';
+import { FlowFacts } from '../../appgraph/detect/flows';
+import { FieldSchema } from '../../appgraph/detect/entities';
+import { TestContractFacts } from '../../appgraph/detect/tests';
 
 /** Public interface kinds — the cross-module surface (types + top-level fns). */
 const INTERFACE_KINDS = new Set<NodeKind>(['class', 'interface', 'enum', 'function']);

@@ -18,7 +18,7 @@
  * canonical so findings stay diffable across rounds by stable check id.
  */
 
-import { AppNode } from '../schema';
+import { AppNode } from '../../appgraph/schema';
 import { MigrationGraph } from '../types';
 import { ContractCheck, UnitContract } from '../plan/contract';
 import { MigrationPlan } from '../plan';

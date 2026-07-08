@@ -10,8 +10,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { Node, NodeKind } from '../../src/types';
-import { ReadCode, DetectContext } from '../../src/migration/detect/shared';
-import { detectTestContract } from '../../src/migration/detect/tests';
+import { ReadCode, DetectContext } from '../../src/appgraph/detect/shared';
+import { detectTestContract } from '../../src/appgraph/detect/tests';
 
 interface Spec {
   kind: NodeKind;

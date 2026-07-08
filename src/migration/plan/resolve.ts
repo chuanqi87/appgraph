@@ -5,7 +5,7 @@
  * module name.
  */
 
-import { slug } from '../schema';
+import { slug } from '../../appgraph/schema';
 import { MigrationPlan, UnitPlan } from './index';
 
 /** Resolve a unit by 1-based order, id, label, or member module name. */

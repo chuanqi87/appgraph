@@ -20,7 +20,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { AppEdge, AppNode, CoverageWarning, makeEdgeId } from '../schema';
 import { extractManifest } from '../extractors/android/manifest';
-import { harmonyTargetFor } from '../capabilities-ext';
+import { harmonyTargetFor } from '../../migration/capabilities-ext';
 
 /** Directories that never hold shippable app manifests. */
 const EXCLUDED_DIRS = new Set([

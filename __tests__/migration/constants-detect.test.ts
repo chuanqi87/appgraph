@@ -9,8 +9,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { Node, NodeKind } from '../../src/types';
-import { ReadCode, DetectContext } from '../../src/migration/detect/shared';
-import { detectConstants } from '../../src/migration/detect/constants';
+import { ReadCode, DetectContext } from '../../src/appgraph/detect/shared';
+import { detectConstants } from '../../src/appgraph/detect/constants';
 
 interface Fixture {
   nodes: Node[];

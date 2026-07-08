@@ -21,10 +21,10 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppNode, makeNodeId, screenMatchKey } from '../schema';
+import { AppNode, makeNodeId, screenMatchKey } from '../../appgraph/schema';
 import type { NavEdge } from './structure-diff';
-import { CodeSymbolGraph } from '../graph-reader';
-import type { CodeEdge } from '../graph-reader';
+import { CodeSymbolGraph } from '../../appgraph/graph-reader';
+import type { CodeEdge } from '../../appgraph/graph-reader';
 import { CodeGraph } from '../../index';
 import type { Node, NodeKind } from '../../types';
 import {

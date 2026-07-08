@@ -19,15 +19,15 @@
 import * as path from 'node:path';
 import { Command } from 'commander';
 import { CodeGraph } from '../index';
-import { CodeSymbolGraph } from './graph-reader';
-import { buildModuleDependencyGraph } from './modules';
-import { buildCommunityOverlay } from './community';
+import { CodeSymbolGraph } from '../appgraph/graph-reader';
+import { buildModuleDependencyGraph } from '../appgraph/modules';
+import { buildCommunityOverlay } from '../appgraph/community';
 import { computeMigrationOrder } from './order/topo';
 import { detectCapabilities } from './capabilities-ext';
-import { detectManifestCapabilities, ModuleRef } from './detect/manifest-capabilities';
-import { buildSemantics } from './detect/semantics';
-import { assignNodesToModules } from './modules/assign';
-import { AppNode } from './schema';
+import { detectManifestCapabilities, ModuleRef } from '../appgraph/detect/manifest-capabilities';
+import { buildSemantics } from '../appgraph/detect/semantics';
+import { assignNodesToModules } from '../appgraph/modules/assign';
+import { AppNode } from '../appgraph/schema';
 import { buildMigrationPlan, writeMigrationPlan, MigrationPlan } from './plan';
 import { UnitContract } from './plan/contract';
 import { resolveUnit } from './plan/resolve';
@@ -51,8 +51,8 @@ import {
   mergeInto,
   MigrationGraph,
 } from './types';
+import { canonicalJson } from '../appgraph/serialize';
 import {
-  canonicalJson,
   hashMigrationGraph,
   migrationGraphPath,
   readMigrationGraph,

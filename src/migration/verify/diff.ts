@@ -23,12 +23,12 @@ import {
   AppNode,
   AppNodeKind,
   makeEdgeId,
-} from '../schema';
+} from '../../appgraph/schema';
 import { MigrationCoverageReport, compareAppGraphs } from './compare';
 import { MigrationGraph } from '../types';
 import { Ledger } from '../ledger';
 import { MigrationPlan } from '../plan';
-import { isLayoutHostingEdge } from '../detect/android-structure';
+import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
 import { VERIFIABLE_SPECS } from './capability-markers';
 import {
   ArkExport,

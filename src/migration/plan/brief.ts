@@ -15,7 +15,7 @@
 
 import { ContractCheck, UnitContract } from './contract';
 import { BackgroundComponentBrief, DataModelBrief, ModuleBrief, ScreenBrief } from './context';
-import { isNestedType, typePathKey } from '../qualified-name';
+import { isNestedType, typePathKey } from '../../appgraph/qualified-name';
 
 /** The unit shape the renderer needs (MigrationUnit and UnitPlan both satisfy it). */
 export interface BriefUnit {

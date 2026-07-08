@@ -16,7 +16,7 @@
  * API but no permission behind them.
  */
 
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from './schema';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../appgraph/schema';
 import { Node } from '../types';
 
 /** HarmonyOS translation target for a capability — the LLM's generation anchor. */
