@@ -348,14 +348,14 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
   }
 }
 
-function cmdVerify(pathArg: string, options: { out?: string; target?: string; unit?: string }): void {
+async function cmdVerify(pathArg: string, options: { out?: string; target?: string; unit?: string }): Promise<void> {
   const root = path.resolve(pathArg);
   const outPath = options.out ? path.resolve(options.out) : migrationGraphPath(root);
   if (!options.target) {
     throw new Error('缺少 --target <目标工程路径>:verify 校验的是外部 agent 迁移出的 HarmonyOS 工程');
   }
   if (options.unit !== undefined) {
-    cmdVerifyUnit(root, outPath, options.target, options.unit);
+    await cmdVerifyUnit(root, outPath, options.target, options.unit);
     return;
   }
   const graph = readMigrationGraph(outPath);
@@ -367,7 +367,7 @@ function cmdVerify(pathArg: string, options: { out?: string; target?: string; un
   // registered target paths / renames); absent → the module-name heuristic.
   const ledger = readLedger(getLedgerPath(root));
   const plan = readJsonFile<MigrationPlan>(path.join(getPlanDir(root), 'plan.json'));
-  const result = verifyMigration(graph, path.resolve(options.target), ledger, plan);
+  const result = await verifyMigration(graph, path.resolve(options.target), ledger, plan);
   mergeInto(graph, { nodes: result.targetNodes, edges: result.mapsToEdges });
   writeMigrationGraph(outPath, graph);
 
@@ -389,7 +389,7 @@ function cmdVerify(pathArg: string, options: { out?: string; target?: string; un
   writeFileSync(reportPath, JSON.stringify(reportDoc, null, 2) + '\n', 'utf8');
 
   const { report } = result;
-  const methodLabel = result.method === 'arkanalyzer' ? 'ArkAnalyzer 符号级' : '正则回退';
+  const methodLabel = 'CodeGraph 符号级 (tree-sitter)';
   console.log(`M4 迁移验证 → ${path.relative(process.cwd(), reportPath)}`);
   console.log(`  解析方式 ${methodLabel} · 生成物 ${result.fileCount} 个文件 · 目标节点 ${result.targetNodes.length}`);
   if (result.structural) {
@@ -466,7 +466,7 @@ function cmdVerify(pathArg: string, options: { out?: string; target?: string; un
 }
 
 /** `verify --unit <unit>` — per-unit gate: no full report, no graph merge. */
-function cmdVerifyUnit(root: string, outPath: string, targetRoot: string, unitQuery: string): void {
+async function cmdVerifyUnit(root: string, outPath: string, targetRoot: string, unitQuery: string): Promise<void> {
   const graph = readMigrationGraph(outPath);
   if (!graph) {
     throw new Error(`未找到迁移图 ${outPath},请先运行完整流程(modules → … → plan)`);
@@ -486,7 +486,7 @@ function cmdVerifyUnit(root: string, outPath: string, targetRoot: string, unitQu
     throw new Error(`未找到契约 ${contractRel},请重跑 “migrate plan”`);
   }
   const ledger = readLedger(getLedgerPath(root));
-  const report = verifyUnit(graph, plan, contract, path.resolve(targetRoot), ledger);
+  const report = await verifyUnit(graph, plan, contract, path.resolve(targetRoot), ledger);
 
   const reportPath = path.join(getVerifyUnitsDir(root), `${report.unitId}.json`);
   mkdirSync(getVerifyUnitsDir(root), { recursive: true });
@@ -496,7 +496,7 @@ function cmdVerifyUnit(root: string, outPath: string, targetRoot: string, unitQu
 
 function printUnitReport(report: UnitVerifyReport, reportPath: string): void {
   const s = report.summary;
-  const methodLabel = report.method === 'arkanalyzer' ? 'ArkAnalyzer 符号级' : '正则回退';
+  const methodLabel = 'CodeGraph 符号级 (tree-sitter)';
   console.log(`M4 单元验收 ${report.unitLabel} → ${path.relative(process.cwd(), reportPath)}`);
   console.log(`  解析方式 ${methodLabel} · 作用域 ${report.scope}`);
   console.log(
@@ -886,8 +886,8 @@ function buildProgram(): Command {
     .requiredOption('-t, --target <dir>', '迁移产出的 HarmonyOS 工程根目录')
     .option('-o, --out <file>', '迁移图 JSON 路径')
     .option('--unit <unit>', '仅验收单个迁移单元(1 起序号 / id / 标签 / 模块名);按契约逐条核对并三分类缺口')
-    .action((pathArg: string, options: { out?: string; target?: string; unit?: string }) => {
-      cmdVerify(pathArg, options);
+    .action(async (pathArg: string, options: { out?: string; target?: string; unit?: string }) => {
+      await cmdVerify(pathArg, options);
     });
 
   program

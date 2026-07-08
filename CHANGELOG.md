@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- HarmonyOS migration verification now reads the generated ArkTS with the same built-in tree-sitter engine CodeGraph uses everywhere else — recovering the target app's screens, HarmonyOS capabilities, exported types (with their fields), and router navigation from a single code index. This drops the optional ArkAnalyzer dependency, so `migrate verify` needs no extra install.
+
 
 ## [1.3.0] - 2026-07-07
 

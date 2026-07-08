@@ -2,10 +2,10 @@
  * U2 · Compose screens + navigation graph.
  *
  * Turns the app's product structure — its SCREENS and how they navigate — into
- * first-class graph nodes. Phase-2's target side already reconstructs @Entry/
- * @Component ViewTree screens (arkanalyzer.ts); this is the SOURCE half V1 needs
- * to diff against (a Compose app declares ~1 Activity in its manifest, so screens
- * were invisible before).
+ * first-class graph nodes. Phase-2's target side reconstructs @Entry/@Component
+ * screens from the community tree-sitter index (verify/target-graph.ts); this is
+ * the SOURCE half V1 needs to diff against (a Compose app declares ~1 Activity in
+ * its manifest, so screens were invisible before).
  *
  * A Screen is a `@Composable` function that is a navigation destination: named
  * `*Screen`/`*Route`/`*Page`, or taking a nav parameter (NavController / an

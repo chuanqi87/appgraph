@@ -70,3 +70,4 @@ assets/__pycache__/
 assets/generate-waitlist.py
 
 .claude/plans
+.understand-anything/

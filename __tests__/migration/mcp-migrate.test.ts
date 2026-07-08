@@ -147,7 +147,7 @@ beforeAll(() => {
   fs.writeFileSync(
     path.join(getMigrationDir(warmRoot), 'verify', 'units', 'u-core.json'),
     JSON.stringify({
-      schemaVersion: 1, unitId: 'u-core', unitLabel: ':core', method: 'regex', scope: 'ledger-paths',
+      schemaVersion: 1, unitId: 'u-core', unitLabel: ':core', method: 'codegraph', scope: 'ledger-paths',
       checks: [{ id: 'a1b2c3d4', tier: 'L1', kind: 'interface', moduleName: ':core', subject: 'CoreClient', status: 'fail', gapClass: 'unit-missing', evidence: ['CoreClient'] }],
       summary: { total: 1, pass: 0, fail: 1, skipped: 0, info: 0 },
     }),
@@ -157,7 +157,7 @@ beforeAll(() => {
   fs.writeFileSync(
     path.join(getMigrationDir(warmRoot), 'verify-report.json'),
     JSON.stringify({
-      method: 'arkanalyzer',
+      method: 'codegraph',
       report: {
         capabilityCoverage: 0.5,
         capabilities: { matched: ['network'], missingInTarget: ['camera'], extraInTarget: [] },

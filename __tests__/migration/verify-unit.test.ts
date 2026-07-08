@@ -103,38 +103,38 @@ function ledger(units: Record<string, LedgerStatus>): Ledger {
 }
 
 describe('verifyUnit · three-way classification', () => {
-  it('classifies a miss on a NOT-migrated unit as not-migrated (no gap)', () => {
-    const report = verifyUnit(graph(), plan(), contract(), target, null);
+  it('classifies a miss on a NOT-migrated unit as not-migrated (no gap)', async () => {
+    const report = await verifyUnit(graph(), plan(), contract(), target, null);
     const constant = report.checks.find((c) => c.kind === 'constant')!;
     expect(constant.status).toBe('skipped');
     expect(constant.gapClass).toBe('not-migrated');
   });
 
-  it('classifies a miss on a MIGRATED unit as unit-missing (real gap)', () => {
-    const report = verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' }));
+  it('classifies a miss on a MIGRATED unit as unit-missing (real gap)', async () => {
+    const report = await verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' }));
     const constant = report.checks.find((c) => c.kind === 'constant')!;
     expect(constant.status).toBe('fail');
     expect(constant.gapClass).toBe('unit-missing');
     expect(constant.evidence ?? []).toEqual([]); // literal absent → no hit files
   });
 
-  it('classifies a nav-edge into an un-migrated dependency as dependency-missing', () => {
+  it('classifies a nav-edge into an un-migrated dependency as dependency-missing', async () => {
     // unitA migrated, but ScreenB's owner unitB is still pending.
-    const report = verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated', unitB: 'pending' }));
+    const report = await verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated', unitB: 'pending' }));
     const nav = report.checks.find((c) => c.kind === 'nav-edge')!;
     expect(nav.status).toBe('skipped');
     expect(nav.gapClass).toBe('dependency-missing');
   });
 
-  it('passes a check whose invariant is present on the target', () => {
+  it('passes a check whose invariant is present on the target', async () => {
     writeFileSync(join(target, 'entry/src/main/ets/net.ts'), "const u = 'https://api.example.com';\n");
-    const report = verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' }));
+    const report = await verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' }));
     expect(report.checks.find((c) => c.kind === 'constant')!.status).toBe('pass');
   });
 
-  it('produces a byte-identical report across two runs', () => {
-    const a = canonicalJson(verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' })));
-    const b = canonicalJson(verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' })));
+  it('produces a byte-identical report across two runs', async () => {
+    const a = canonicalJson(await verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' })));
+    const b = canonicalJson(await verifyUnit(graph(), plan(), contract(), target, ledger({ unitA: 'migrated' })));
     expect(a).toBe(b);
   });
 });

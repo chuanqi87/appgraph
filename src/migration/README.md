@@ -104,7 +104,7 @@ src/migration/
   detect/             S1+S2+U:manifest 权限能力 / android 结构(组件+Intent导航+布局宿主)/ 角色 / compose+xml 屏幕 / 实体 / DI / 流 / 资源
   order/topo.ts       M3:Tarjan SCC + 自底向上拓扑序
   plan/               P:unit-planning(聚合/拆分)/ context(工单组装)/ brief(渲染)/ contract(单元契约)/ scaffold(app 装配)/ resolve(单元解析)/ index(计划+落盘)
-  verify/             M4:arkanalyzer(符号级)/ parse-ets(正则回退+导航边)/ diff(含 L2 导航/DI)/ structure-diff(V1/V2/导航)/ semantic-scan(L3 contains-scan)/ unit(单元级+三分类)
+  verify/             M4:target-graph(社区 tree-sitter 索引目标→投影 capability/screen/export/nav)/ capability-markers(能力 marker 表)/ diff(含 L2 导航/DI)/ structure-diff(V1/V2/导航)/ semantic-scan(L3 contains-scan)/ unit(单元级+三分类)
   mcp/                MCP 查询面:server(stdio JSON-RPC)/ tools(5 个查询工具)/ instructions
 ```
 

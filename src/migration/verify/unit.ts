@@ -23,7 +23,7 @@ import { MigrationGraph } from '../types';
 import { ContractCheck, UnitContract } from '../plan/contract';
 import { MigrationPlan } from '../plan';
 import { Ledger, LedgerStatus } from '../ledger';
-import { resolveTargetSurface } from './diff';
+import { ArkExport, resolveTargetSurface } from './target-graph';
 import { diffEntitySchemas, normalizeScreenName } from './structure-diff';
 import {
   loadTargetSources,
@@ -32,7 +32,6 @@ import {
   scanSql,
   TargetSourceIndex,
 } from './semantic-scan';
-import { ArkExport } from './arkanalyzer';
 import {
   countInterfaceNames,
   matchInterface,
@@ -61,7 +60,7 @@ export interface UnitVerifyReport {
   schemaVersion: 1;
   unitId: string;
   unitLabel: string;
-  method: 'arkanalyzer' | 'regex';
+  method: 'codegraph';
   scope: 'ledger-paths' | 'module-path' | 'global';
   checks: CheckResult[];
   summary: { total: number; pass: number; fail: number; skipped: number; info: number };
@@ -71,14 +70,14 @@ export interface UnitVerifyReport {
 const MIGRATED_STATES = new Set<LedgerStatus>(['migrated', 'verified']);
 
 /** Verify a single unit's contract against the migrated target project. */
-export function verifyUnit(
+export async function verifyUnit(
   graph: MigrationGraph,
   plan: MigrationPlan,
   contract: UnitContract,
   targetRoot: string,
   ledger: Ledger | null
-): UnitVerifyReport {
-  const surface = resolveTargetSurface(targetRoot);
+): Promise<UnitVerifyReport> {
+  const surface = await resolveTargetSurface(targetRoot);
   const entry = ledger?.units[contract.unitId];
   const unitStatus = entry?.status ?? null;
   const moduleNames = [...new Set(contract.checks.map((c) => c.moduleName))];

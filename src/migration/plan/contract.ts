@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { VERIFIABLE_SPECS } from '../verify/parse-ets';
+import { VERIFIABLE_SPECS } from '../verify/capability-markers';
 import { AssemblyInput, ModuleBrief, assembleModuleBrief } from './context';
 
 export const UNIT_CONTRACT_SCHEMA_VERSION = 1;

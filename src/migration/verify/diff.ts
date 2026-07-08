@@ -5,15 +5,15 @@
  * `migrate verify --target <harmonyProject>` and works the reported gaps.
  *
  * Symbol-level diff:
- *   - Target capabilities/screens/exports come from ArkAnalyzer's real symbol
- *     graph (`verify/arkanalyzer.ts`) when available; the regex path
- *     (`parse-ets.ts`) is the union fallback so nothing regresses.
+ *   - Target capabilities/screens/exports come from the community tree-sitter
+ *     index of the generated code (`verify/target-graph.ts`) — the SAME engine
+ *     the source side uses, so both halves are lifted identically.
  *   - Capability coverage runs appgraph's `compareAppGraphs`; a capability
  *     the source uses but the target never references is a `missingInTarget` gap.
  *   - Interface fidelity (T3): for each SOURCE module, is every public member
  *     represented by a target export? The baseline is the source module's
  *     `attrs.publicInterface` persisted by `migrate plan`.
- *   - Structural validity (T4): whether ArkAnalyzer could parse the target at all.
+ *   - Structural validity (T4): whether the target could be indexed at all.
  */
 
 import {
@@ -29,8 +29,12 @@ import { MigrationGraph } from '../types';
 import { Ledger } from '../ledger';
 import { MigrationPlan } from '../plan';
 import { isLayoutHostingEdge } from '../detect/android-structure';
-import { VERIFIABLE_SPECS, parseGeneratedTarget } from './parse-ets';
-import { ArkExport, ArkTargetGraph, buildArkTargetGraph } from './arkanalyzer';
+import { VERIFIABLE_SPECS } from './capability-markers';
+import {
+  ArkExport,
+  TargetStructural,
+  resolveTargetSurface,
+} from './target-graph';
 import {
   diffEntitySchemas,
   diffNavigation,
@@ -66,11 +70,11 @@ export interface VerifyResult {
   /** Capability ids that carry no auto-detectable marker (construct mappings). */
   unverifiable: string[];
   fileCount: number;
-  /** 'arkanalyzer' when the symbol graph was built, else 'regex' (fallback). */
-  method: 'arkanalyzer' | 'regex';
-  /** T4 structural validity of the generated code (null on the regex path). */
-  structural: ArkTargetGraph['structural'] | null;
-  /** T3 interface fidelity per migrated module (empty on the regex path). */
+  /** The target parse path — always 'codegraph' (community tree-sitter). */
+  method: 'codegraph';
+  /** T4 structural validity of the generated code (buildOk=false if unparseable). */
+  structural: TargetStructural;
+  /** T3 interface fidelity per migrated module (empty when the target is unparseable). */
   fidelity: InterfaceFidelity[];
   /** V1 · source (U2/U6) vs target screen fidelity. */
   screenDiff: ScreenDiff;
@@ -90,51 +94,13 @@ export interface DiBindingDiff {
   missing: Array<{ iface: string; impl: string; missingEnds: string[] }>;
 }
 
-/**
- * The recovered target surface: ArkAnalyzer's symbol graph (precise) unioned
- * with the regex parse (catches dry-run comment markers ArkAnalyzer's import
- * scan can't see). Resolved ONCE per verify and shared by the full-project and
- * per-unit gates so the target is never parsed twice.
- */
-export interface TargetSurface {
-  method: 'arkanalyzer' | 'regex';
-  capabilityNodes: AppNode[];
-  screenNodes: AppNode[];
-  /** Router navigation edges recovered by the regex parse (from → to page). */
-  navEdges: NavEdge[];
-  exports: ArkExport[];
-  structural: ArkTargetGraph['structural'] | null;
-  fileCount: number;
-  unverifiable: string[];
-}
-
-/** Parse the target project once into the shared surface. */
-export function resolveTargetSurface(targetRoot: string): TargetSurface {
-  const ark = buildArkTargetGraph(targetRoot);
-  const regex = parseGeneratedTarget(targetRoot);
-  const capabilityNodes = unionByMatchKey([...(ark?.capabilityNodes ?? []), ...regex.capabilityNodes]);
-  const screenNodes = (ark && ark.screenNodes.length > 0 ? ark.screenNodes : regex.screenNodes)
-    .slice()
-    .sort((a, b) => a.id.localeCompare(b.id));
-  return {
-    method: ark ? 'arkanalyzer' : 'regex',
-    capabilityNodes,
-    screenNodes,
-    navEdges: regex.navEdges,
-    exports: ark?.exports ?? [],
-    structural: ark?.structural ?? null,
-    fileCount: ark ? ark.structural.fileCount : regex.fileCount,
-    unverifiable: regex.unverifiable,
-  };
-}
-
 /** Verify a migrated HarmonyOS project against the source migration graph. */
-export function verifyMigration(
+export async function verifyMigration(
   graph: MigrationGraph,
   targetRoot: string,
   ledger: Ledger | null = null,
   plan: MigrationPlan | null = null
-): VerifyResult {
+): Promise<VerifyResult> {
   const verifiableIds = new Set(VERIFIABLE_SPECS.map((x) => x.spec.id));
 
   // Source AppGraph: android Capability nodes that are auto-verifiable.
@@ -143,7 +109,7 @@ export function verifyMigration(
   );
   const source = mkAppGraph('android', graph.source.app.packageName, srcCapNodes);
 
-  const surface = resolveTargetSurface(targetRoot);
+  const surface = await resolveTargetSurface(targetRoot);
   const targetCapNodes = surface.capabilityNodes;
   const targetScreenNodes = surface.screenNodes;
   const targetNodes = [...targetCapNodes, ...targetScreenNodes];
@@ -171,10 +137,9 @@ export function verifyMigration(
     });
   }
 
-  const fidelity =
-    surface.method === 'arkanalyzer'
-      ? computeInterfaceFidelity(graph, surface.exports, buildFidelityScoping(plan, ledger))
-      : [];
+  const fidelity = surface.structural.buildOk
+    ? computeInterfaceFidelity(graph, surface.exports, buildFidelityScoping(plan, ledger))
+    : [];
 
   // V1 · screen fidelity (source U2/U6/S2 android screens ↔ target ViewTree
   // screens). An xml-layout screen hosted by an Activity/Fragment
@@ -363,13 +328,6 @@ export function interfaceFidelity(
     missing,
     scope,
   };
-}
-
-/** Dedupe capability nodes by matchKey, keeping the first (deterministic). */
-function unionByMatchKey(nodes: AppNode[]): AppNode[] {
-  const byKey = new Map<string, AppNode>();
-  for (const n of nodes) if (!byKey.has(n.matchKey)) byKey.set(n.matchKey, n);
-  return [...byKey.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 const SUPPORTED_KINDS: AppNodeKind[] = ['Capability', 'Screen'];

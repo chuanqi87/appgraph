@@ -45,8 +45,7 @@
     "picomatch": "^4.0.3",
     "sisteransi": "^1.0.5",
     "tree-sitter-wasms": "^0.1.11",
-    "web-tree-sitter": "^0.25.3",
-    "arkanalyzer": "^1.0.90"
+    "web-tree-sitter": "^0.25.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

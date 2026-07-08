@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { AppNode } from '../../src/migration/schema';
-import { ArkExport } from '../../src/migration/verify/arkanalyzer';
+import { ArkExport } from '../../src/migration/verify/target-graph';
 import { diffScreens, diffEntitySchemas } from '../../src/migration/verify/structure-diff';
 
 function screen(name: string, platform: 'android' | 'harmony'): AppNode {
