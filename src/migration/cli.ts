@@ -24,10 +24,9 @@ import { buildModuleDependencyGraph } from '../appgraph/modules';
 import { buildCommunityOverlay } from '../appgraph/community';
 import { computeMigrationOrder } from './order/topo';
 import { detectCapabilities } from '../appgraph/detect/api-capabilities';
-import { detectManifestCapabilities, ModuleRef } from '../appgraph/detect/manifest-capabilities';
+import { detectManifestCapabilities } from '../appgraph/detect/manifest-capabilities';
 import { buildSemantics } from '../appgraph/detect/semantics';
-import { assignNodesToModules } from '../appgraph/modules/assign';
-import { AppNode } from '../appgraph/schema';
+import { buildAppGraph, moduleRefs, nodeToModuleId } from '../appgraph/build';
 import { buildMigrationPlan, writeMigrationPlan, MigrationPlan } from './plan';
 import { UnitContract } from './plan/contract';
 import { resolveUnit } from './plan/resolve';
@@ -141,26 +140,6 @@ function cmdCommunity(pathArg: string, options: { out?: string }): void {
   }
 }
 
-/** Map each code node id to its owning ArchModule id, via the M1 assignment. */
-function nodeToModuleId(archModules: AppNode[], reader: CodeSymbolGraph): Map<string, string> {
-  const moduleDirToId = new Map<string, string>();
-  const moduleDirs: string[] = [];
-  for (const m of archModules) {
-    const dir = typeof m.attrs?.dir === 'string' ? m.attrs.dir : undefined;
-    if (dir !== undefined) {
-      moduleDirToId.set(dir, m.id);
-      moduleDirs.push(dir);
-    }
-  }
-  const assignment = assignNodesToModules(reader.getAllNodes(), moduleDirs);
-  const map = new Map<string, string>();
-  for (const [nid, dir] of assignment.nodeToModuleDir) {
-    const mid = moduleDirToId.get(dir);
-    if (mid) map.set(nid, mid);
-  }
-  return map;
-}
-
 function cmdCapabilities(pathArg: string, options: { out?: string }): void {
   const root = path.resolve(pathArg);
   const outPath = options.out ? path.resolve(options.out) : migrationGraphPath(root);
@@ -254,15 +233,6 @@ function cmdSemantics(pathArg: string, options: { out?: string }): void {
   }
 }
 
-/** ArchModule nodes → the {id,name,dir} refs the manifest attributor needs. */
-function moduleRefs(archModules: AppNode[]): ModuleRef[] {
-  const refs: ModuleRef[] = [];
-  for (const m of archModules) {
-    const dir = typeof m.attrs?.dir === 'string' ? m.attrs.dir : undefined;
-    if (dir !== undefined) refs.push({ id: m.id, name: m.name, dir });
-  }
-  return refs;
-}
 
 function parsePositiveInt(value: string, flag: string): number {
   const n = Number.parseInt(value, 10);
@@ -567,36 +537,21 @@ function cmdOrder(pathArg: string, options: { out?: string; includeLifted?: bool
   console.log(`  图指纹 ${hashMigrationGraph(graph).slice(0, 16)}`);
 }
 
-/** Rebuild the structural migration graph (M1→M2→M3-capabilities) from scratch. */
+/**
+ * Rebuild the structural migration graph (M1→M2→M3→U) from scratch. Delegates to
+ * the shared `buildAppGraph`, then wraps its result in the migration document, so
+ * `migrate sync` and `appgraph build` produce the identical node/edge set.
+ */
 function rebuildStructuralGraph(
   root: string,
   reader: CodeSymbolGraph,
   packageName: string
 ): MigrationGraph {
-  const graph = emptyMigrationGraph({
-    platform: 'android',
-    app: { name: path.basename(root), packageName },
-  });
-  const mod = buildModuleDependencyGraph(root, reader);
-  if (mod.packageName) graph.source.app.packageName = mod.packageName;
-  mergeInto(graph, { nodes: mod.nodes, edges: mod.edges, warnings: mod.warnings });
-
-  const archModules = graph.nodes.filter((n) => n.kind === 'ArchModule');
-  const comm = buildCommunityOverlay(archModules, reader);
-  mergeInto(graph, { nodes: comm.nodes, edges: comm.edges, warnings: comm.warnings });
-
-  const api = detectCapabilities(reader.getAllNodes(), nodeToModuleId(archModules, reader));
-  mergeInto(graph, { nodes: api.capabilityNodes, edges: api.edges });
-  const manifest = detectManifestCapabilities(root, moduleRefs(archModules));
-  mergeInto(graph, {
-    nodes: [...manifest.permissionNodes, ...manifest.capabilityNodes],
-    edges: manifest.usesEdges,
-    warnings: manifest.warnings,
-  });
-
-  // U · source-side semantic enrichment (roles / screens / entities / DI / flows / resources).
-  const semantics = buildSemantics(reader, root, archModules, nodeToModuleId(archModules, reader));
-  mergeInto(graph, { nodes: semantics.nodes, edges: semantics.edges, warnings: semantics.warnings });
+  const app = buildAppGraph(root, reader, { platform: 'android', packageName });
+  const graph = emptyMigrationGraph({ platform: 'android', app: app.app });
+  graph.nodes = app.nodes;
+  graph.edges = app.edges;
+  graph.coverageWarnings = app.coverageWarnings;
   return graph;
 }
 

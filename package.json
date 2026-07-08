@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "bin": {
     "codegraph": "./dist/bin/codegraph.js",
-    "migrate": "./dist/migration/cli.js"
+    "migrate": "./dist/migration/cli.js",
+    "appgraph": "./dist/appgraph/cli.js"
   },
   "files": [
     "dist",
@@ -14,7 +15,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-assets && node -e \"const fs=require('fs');fs.chmodSync('dist/bin/codegraph.js', 0o755);fs.chmodSync('dist/migration/cli.js', 0o755)\"",
+    "build": "tsc && npm run copy-assets && node -e \"const fs=require('fs');fs.chmodSync('dist/bin/codegraph.js', 0o755);fs.chmodSync('dist/migration/cli.js', 0o755);fs.chmodSync('dist/appgraph/cli.js', 0o755)\"",
     "preuninstall": "node dist/bin/uninstall.js",
     "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f))\"",
     "dev": "tsc --watch",
