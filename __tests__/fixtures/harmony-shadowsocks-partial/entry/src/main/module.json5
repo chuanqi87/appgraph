@@ -1,0 +1,29 @@
+{
+  // Partial migration of shadowsocks-android to HarmonyOS.
+  // Intentionally MISSING: the VPN capability and the ss:// deep link — so a
+  // cross-platform diff surfaces them as migration gaps.
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "srcEntry": "./ets/entryability/EntryAbility.ets",
+    "mainElement": "EntryAbility",
+    "deviceTypes": ["phone"],
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "skills": [
+          {
+            "entities": ["entity.system.home"],
+            "actions": ["action.system.home"]
+          }
+        ]
+      }
+    ],
+    "requestPermissions": [
+      { "name": "ohos.permission.INTERNET" },
+      { "name": "ohos.permission.GET_NETWORK_INFO" },
+      { "name": "ohos.permission.NOTIFICATION_CONTROLLER" },
+    ]
+  }
+}

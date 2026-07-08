@@ -1,0 +1,39 @@
+/**
+ * Server instructions returned in the MCP `initialize` response — the first
+ * (and often only) usage guidance the external migration agent sees. One page,
+ * playbook-shaped: what each tool answers, in what order to use them, and what
+ * to do when the analysis artifacts aren't generated yet.
+ */
+
+export const MIGRATE_SERVER_INSTRUCTIONS = `# migrate — Android→HarmonyOS 迁移分析查询
+
+本服务把 appgraph 的迁移分析事实(迁移图 / 工单 / 验收报告)暴露给迁移 agent 在线查询。
+所有事实都是确定性静态分析产物;本服务只读,不做任何翻译或修改。
+
+## 迁移回路(每个单元)
+
+**取工单 → ledger set(登记开始)→ 翻译 → ledger set migrated → verify --unit → 修缺口 → 下一单元**
+
+1. **migrate_unit "0"**(或 "scaffold")— 先取应用装配工单:全局路由表、权限/深链(module.json5)、
+   EntryAbility 入口。建立全局观后再逐单元迁移。
+2. **migrate_order** — 自底向上的迁移单元顺序(叶子优先)。从第 1 个单元开始。
+3. **migrate_unit** — 取一个单元的完整工单:台账状态 + 依赖去向/导出改名 + 验收契约摘要 +
+   markdown 原文。参数 unit 可以是序号(如 "3")、单元 id、label 或成员模块名。
+4. **migrate_module_facts** — 需要某个依赖模块的完整事实时查询(屏幕/导航、字段 schema、
+   DI 装配、响应式流、后台组件、深链、能力→HarmonyOS 目标、公共接口基线、依赖)。
+5. **migrate_ledger** — 查看/回顾各单元迁移状态(状态由 CLI \`migrate ledger set\` 写入)。
+   迁移前后务必登记:开始时 \`--status in-progress\`,完成时 \`--status migrated --target-module <m>
+   --target-path <前缀> --export <源名=目标名>\`。登记的 targetPath/exportMap 让 verify 精准定位与匹配改名。
+6. 迁移完一个单元后,在源工程运行 \`migrate verify <源> --target <目标工程> --unit <单元>\`(单元级)
+   或不带 \`--unit\`(全量),然后用 **migrate_verify_gaps**(带 unit 参数看单元报告)查看缺口。
+   单元缺口分三类:**unit-missing**(已登记迁移却缺失,真缺口,必修)、**dependency-missing**
+   (依赖单元还没迁,先迁依赖)、**not-migrated**(本单元还没登记迁移,不是缺口)。
+
+## 产物未生成时
+
+工具会返回引导文本(不是错误):按提示在源工程运行
+\`migrate index → modules → community → capabilities → semantics → order → plan\`
+生成分析产物后重试。
+
+源码级问题(符号定义、调用链、实现细节)不要问本服务 —— 用 codegraph MCP 的
+\`codegraph_explore\`,或直接按工单里的文件锚点读源码。`;

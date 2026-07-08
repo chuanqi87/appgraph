@@ -1,0 +1,330 @@
+/**
+ * P · unit planning — size migration units to the work, not the project layout.
+ *
+ * Locks the packing rules: small units bin-pack by their root-excluded
+ * dependent set (a project-wide root — nothing depends on it — is stripped
+ * out first, so it can't defeat the comparison), a bin left with a single
+ * real owner folds into it when capacity allows, a bin that's already
+ * healthy-sized stands on its own, a reachability guard keeps same-key units
+ * with a path between them apart, oversized single-module units split along
+ * their M2 subdivision Features (remainder last), cyclic SCC units are never
+ * split, the re-derived order stays bottom-up, and the whole layer is
+ * deterministic and opt-out-able.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../../src/migration/schema';
+import { computeMigrationOrder } from '../../src/migration/order/topo';
+import { emptyMigrationGraph, mergeInto, MigrationGraph } from '../../src/migration/types';
+import {
+  DEFAULT_PLANNING_OPTIONS,
+  PlanningOptions,
+  planUnits,
+} from '../../src/migration/plan/unit-planning';
+
+const OPTS: PlanningOptions = { ...DEFAULT_PLANNING_OPTIONS }; // min 120 · max 3000
+
+function archModule(name: string, symbolCount: number): AppNode {
+  const matchKey = `module:${name}`;
+  return {
+    id: makeNodeId('android', 'ArchModule', matchKey),
+    kind: 'ArchModule',
+    matchKey,
+    name: `:${name}`,
+    platform: 'android',
+    provenance: 'manifest',
+    fidelity: 'source-project',
+    confidence: 1,
+    attrs: { dir: name, symbolCount },
+  };
+}
+
+function dependsOn(from: AppNode, to: AppNode, provenance: AppEdge['provenance'] = 'manifest'): AppEdge {
+  return {
+    id: makeEdgeId('depends_on', from.id, to.id),
+    kind: 'depends_on',
+    from: from.id,
+    to: to.id,
+    provenance,
+    confidence: 1,
+  };
+}
+
+function feature(
+  name: string,
+  sig: string,
+  moduleId: string,
+  members: string[],
+  size = members.length
+): AppNode {
+  const matchKey = `feature:${sig}`;
+  return {
+    id: makeNodeId('android', 'Feature', matchKey),
+    kind: 'Feature',
+    matchKey,
+    name,
+    platform: 'android',
+    subtype: 'subdivision',
+    provenance: 'lifted',
+    fidelity: 'source-project',
+    confidence: 0.7,
+    attrs: { sig, moduleSpan: [moduleId], members, size },
+  };
+}
+
+/** Graph + order over the given modules/edges (reuses the real SCC topo). */
+function fixture(nodes: AppNode[], edges: AppEdge[]): MigrationGraph {
+  const graph = emptyMigrationGraph({ platform: 'android', app: { name: 't', packageName: 'c.t' } });
+  mergeInto(graph, { nodes, edges });
+  const modules = graph.nodes.filter((n) => n.kind === 'ArchModule');
+  graph.order = computeMigrationOrder(modules, graph.edges).order;
+  return graph;
+}
+
+function plan(graph: MigrationGraph, opts: PlanningOptions = OPTS) {
+  return planUnits(graph.order!, graph, opts, new Map(), new Map());
+}
+
+describe('P · unit planning — merging', () => {
+  it('bin-packs small leaf siblings that share an identical dependent set', () => {
+    const app = archModule('app', 500);
+    const x = archModule('x', 50);
+    const y = archModule('y', 40);
+    const z = archModule('z', 30);
+    const graph = fixture([app, x, y, z], [dependsOn(app, x), dependsOn(app, y), dependsOn(app, z)]);
+
+    const r = plan(graph);
+    expect(r.units).toHaveLength(2);
+    const [pack, top] = r.units;
+    expect(pack!.kind).toBe('merged');
+    expect(pack!.moduleIds.sort()).toEqual([x.id, y.id, z.id].sort());
+    expect(pack!.symbolCount).toBe(120);
+    expect(pack!.label).toBe(':x,:y,:z');
+    // Bottom-up: the pack (app's dependency) migrates before app.
+    expect(pack!.order).toBeLessThan(top!.order);
+    expect(top!.kind).toBe('module');
+    expect(r.stats.merged).toBe(2); // 4 units → 2
+  });
+
+  it('absorbs a small unit into its unique dependent, collapsing chains', () => {
+    const app = archModule('app', 300);
+    const core = archModule('core', 200);
+    const util = archModule('util', 30);
+    const graph = fixture([app, core, util], [dependsOn(app, core), dependsOn(core, util)]);
+
+    const r = plan(graph);
+    expect(r.units).toHaveLength(2);
+    expect(r.units[0]!.kind).toBe('merged');
+    expect(r.units[0]!.moduleIds.sort()).toEqual([core.id, util.id].sort());
+    // The absorbed pair still precedes its dependent.
+    expect(r.units[1]!.moduleIds).toEqual([app.id]);
+  });
+
+  it('never merges a small unit with two dependents, and respects order constraints', () => {
+    const a = archModule('a', 200);
+    const b = archModule('b', 200);
+    const w = archModule('w', 30);
+    const graph = fixture([a, b, w], [dependsOn(a, w), dependsOn(b, w)]);
+
+    const r = plan(graph);
+    expect(r.units).toHaveLength(3);
+    const wUnit = r.units.find((u) => u.moduleIds.includes(w.id))!;
+    expect(wUnit.kind).toBe('module');
+    // w precedes both of its dependents.
+    for (const u of r.units) {
+      if (u.moduleIds.includes(a.id) || u.moduleIds.includes(b.id)) {
+        expect(wUnit.order).toBeLessThan(u.order);
+      }
+    }
+  });
+
+  it('excludes a root from dependent-set comparison, revealing a fold a raw comparison would miss', () => {
+    const app = archModule('app', 500); // root: nothing depends on it
+    const impl = archModule('impl', 200); // real, non-root owner
+    const api = archModule('api', 10); // depended on by both app and impl
+    const graph = fixture(
+      [app, impl, api],
+      [dependsOn(app, impl), dependsOn(app, api), dependsOn(impl, api)]
+    );
+    const r = plan(graph);
+    // Raw dependents of api = {app, impl} (size 2); excluding root app leaves
+    // {impl} (size 1) — api folds into its one real owner.
+    expect(r.units).toHaveLength(2);
+    const pack = r.units.find((u) => u.moduleIds.includes(api.id))!;
+    expect(pack.kind).toBe('merged');
+    expect(pack.moduleIds.sort()).toEqual([impl.id, api.id].sort());
+  });
+
+  it('leaves a small unit alone when it has two real (non-root) owners', () => {
+    const app = archModule('app', 500); // root
+    const a = archModule('a', 200);
+    const b = archModule('b', 200);
+    const shared = archModule('shared', 10);
+    const graph = fixture(
+      [app, a, b, shared],
+      [dependsOn(app, a), dependsOn(app, b), dependsOn(a, shared), dependsOn(b, shared)]
+    );
+    const r = plan(graph);
+    // shared's root-excluded dependent set is {a, b} — two real owners, so
+    // there's no unambiguous place to fold it.
+    const sharedUnit = r.units.find((u) => u.moduleIds.includes(shared.id))!;
+    expect(sharedUnit.kind).toBe('module');
+    expect(sharedUnit.moduleIds).toEqual([shared.id]);
+  });
+
+  it('bin-packs many satellites of one capacity-limited owner into multiple groups, folding only what still fits', () => {
+    const owner = archModule('owner', 2880); // 120 symbols of headroom under max(3000)
+    const s1 = archModule('s1', 70);
+    const s2 = archModule('s2', 110);
+    const s3 = archModule('s3', 95);
+    const s4 = archModule('s4', 20);
+    const graph = fixture(
+      [owner, s1, s2, s3, s4],
+      [dependsOn(owner, s1), dependsOn(owner, s2), dependsOn(owner, s3), dependsOn(owner, s4)]
+    );
+    const r = plan(graph);
+    // s1..s4 all share the same singleton-owner key. Bin-packing flushes
+    // [s1,s2] once it crosses minUnitSymbols, leaving [s3,s4] as the trailing
+    // (still-small) bin — only that one fits owner's remaining headroom, so
+    // it folds in while [s1,s2] stands on its own instead of overflowing the
+    // owner or being dropped one-by-one.
+    expect(r.units).toHaveLength(2);
+    const standalone = r.units.find((u) => !u.moduleIds.includes(owner.id))!;
+    expect(standalone.moduleIds.sort()).toEqual([s1.id, s2.id].sort());
+    const folded = r.units.find((u) => u.moduleIds.includes(owner.id))!;
+    expect(folded.moduleIds.sort()).toEqual([owner.id, s3.id, s4.id].sort());
+    expect(folded.symbolCount).toBe(2995);
+  });
+
+  it('never bin-packs two same-key units when one has a path to the other', () => {
+    const p = archModule('p', 30); // root; also depends on v directly
+    const ownerx = archModule('ownerx', 200); // a second root consumer of v
+    const v = archModule('v', 30); // depended on only by roots p and ownerx
+    const w = archModule('w', 25); // an unrelated root, safe to pack with v
+    const graph = fixture([p, ownerx, v, w], [dependsOn(p, v), dependsOn(ownerx, v)]);
+
+    const r = plan(graph);
+    // p and v share the same (empty, root-excluded) dependent-set key, but p
+    // has a direct path to v — merging them would fold a unit into something
+    // it itself depends on. The reachability guard must keep them apart.
+    const pUnit = r.units.find((u) => u.moduleIds.includes(p.id))!;
+    const vUnit = r.units.find((u) => u.moduleIds.includes(v.id))!;
+    expect(pUnit.moduleIds).not.toContain(v.id);
+    expect(vUnit.moduleIds).not.toContain(p.id);
+  });
+
+  it('does not absorb past the max-unit threshold', () => {
+    const host = archModule('host', 2990);
+    const tiny = archModule('tiny', 50);
+    const graph = fixture([host, tiny], [dependsOn(host, tiny)]);
+    const r = plan(graph);
+    expect(r.units).toHaveLength(2); // 2990 + 50 > 3000 → keep apart
+    expect(r.units.every((u) => u.kind === 'module')).toBe(true);
+  });
+});
+
+describe('P · unit planning — splitting', () => {
+  function splitFixture() {
+    const big = archModule('big', 4000);
+    const f1 = feature('SyncHub', 'aaa', big.id, ['big/src/A.kt', 'big/src/B.kt']);
+    const f2 = feature('UiHub', 'bbb', big.id, ['big/src/C.kt']);
+    // f2 depends on f1 → f1 migrates first.
+    const dep: AppEdge = {
+      id: makeEdgeId('depends_on', f2.id, f1.id),
+      kind: 'depends_on',
+      from: f2.id,
+      to: f1.id,
+      provenance: 'lifted',
+      confidence: 0.7,
+      attrs: { scope: 'feature' },
+    };
+    const graph = fixture([big, f1, f2], [dep]);
+    const files = new Map([[big.id, ['big/src/A.kt', 'big/src/B.kt', 'big/src/C.kt', 'big/src/D.kt']]]);
+    const counts = new Map([
+      ['big/src/A.kt', 1000],
+      ['big/src/B.kt', 1000],
+      ['big/src/C.kt', 900],
+      ['big/src/D.kt', 1100],
+    ]);
+    return { big, graph, files, counts };
+  }
+
+  it('splits an oversized module along subdivision Features, remainder last', () => {
+    const { big, graph, files, counts } = splitFixture();
+    const r = planUnits(graph.order!, graph, OPTS, files, counts);
+
+    expect(r.stats.split).toBe(1);
+    expect(r.units).toHaveLength(3);
+    const [u1, u2, u3] = r.units;
+    expect(u1!.label).toBe(':big#SyncHub');
+    expect(u1!.files).toEqual(['big/src/A.kt', 'big/src/B.kt']);
+    expect(u1!.symbolCount).toBe(2000);
+    expect(u2!.label).toBe(':big#UiHub');
+    expect(u3!.label).toBe(':big#rest');
+    expect(u3!.featureSig).toBe('rest');
+    expect(u3!.files).toEqual(['big/src/D.kt']);
+    expect(u3!.symbolCount).toBe(1100);
+    expect(r.units.every((u) => u.kind === 'split' && u.moduleIds[0] === big.id)).toBe(true);
+    // Orders are contiguous and stable.
+    expect(r.units.map((u) => u.order)).toEqual([0, 1, 2]);
+  });
+
+  it('never splits a cyclic SCC unit or a module without subdivision Features', () => {
+    const a = archModule('cyca', 4000);
+    const b = archModule('cycb', 4000);
+    const graph = fixture([a, b], [dependsOn(a, b), dependsOn(b, a)]);
+    const r = plan(graph);
+    expect(r.units).toHaveLength(1);
+    expect(r.units[0]!.cyclic).toBe(true);
+    expect(r.units[0]!.kind).toBe('module');
+
+    const lone = archModule('lone', 9000);
+    const g2 = fixture([lone], []);
+    const r2 = plan(g2);
+    expect(r2.units).toHaveLength(1);
+    expect(r2.units[0]!.kind).toBe('module');
+  });
+});
+
+describe('P · unit planning — invariants', () => {
+  it('is deterministic and opt-out returns the SCC order 1:1', () => {
+    const { graph, files, counts } = (() => {
+      const app = archModule('app', 500);
+      const x = archModule('x', 50);
+      const y = archModule('y', 40);
+      return {
+        graph: fixture([app, x, y], [dependsOn(app, x), dependsOn(app, y)]),
+        files: new Map<string, string[]>(),
+        counts: new Map<string, number>(),
+      };
+    })();
+
+    const a = planUnits(graph.order!, graph, OPTS, files, counts);
+    const b = planUnits(graph.order!, graph, OPTS, files, counts);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+
+    const off = planUnits(graph.order!, graph, { ...OPTS, enabled: false }, files, counts);
+    expect(off.units).toHaveLength(graph.order!.units.length);
+    expect(off.units.map((u) => u.moduleIds)).toEqual(
+      [...graph.order!.units].sort((x1, y1) => x1.order - y1.order).map((u) => u.moduleIds)
+    );
+    expect(off.stats.merged).toBe(0);
+    expect(off.stats.split).toBe(0);
+  });
+
+  it('only declared depends_on constrains packing (lifted edges are advisory)', () => {
+    const app = archModule('app', 500);
+    const x = archModule('x', 50);
+    const y = archModule('y', 40);
+    const graph = fixture(
+      [app, x, y],
+      [dependsOn(app, x), dependsOn(app, y), dependsOn(x, y, 'lifted')]
+    );
+    const r = plan(graph);
+    // The lifted x→y edge does NOT stop x and y bin-packing as leaf siblings;
+    // the pack (90 symbols, still small, unique dependent) then folds into app.
+    expect(r.units).toHaveLength(1);
+    expect(r.units[0]!.kind).toBe('merged');
+    expect(r.units[0]!.moduleIds.sort()).toEqual([app.id, x.id, y.id].sort());
+  });
+});

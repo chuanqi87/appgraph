@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+**First Important**: 此文件为CodeGraph的原始CLAUDE.md文件，AppGraph适配的CLAUDE说明参考CLAUDE_APP.md文件。
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
