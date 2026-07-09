@@ -103,6 +103,8 @@ export interface ModuleBrief {
   moduleName: string;
   role?: string;
   layer?: string;
+  /** 'dev-only' when this module is dev-support (benchmark/test/lint). */
+  necessity?: string;
   /** Code symbols assigned to this module (size signal for unit planning). */
   symbolCount?: number;
   publicInterface: InterfaceMember[];
@@ -191,6 +193,7 @@ export function assembleModuleBrief(
     moduleName,
     role: typeof module?.attrs?.role === 'string' ? module.attrs.role : module?.subtype,
     layer: typeof module?.attrs?.layer === 'string' ? module.attrs.layer : undefined,
+    necessity: typeof module?.attrs?.necessity === 'string' ? module.attrs.necessity : undefined,
     symbolCount:
       typeof module?.attrs?.symbolCount === 'number' ? module.attrs.symbolCount : undefined,
     publicInterface: extractPublicInterface(nodes),

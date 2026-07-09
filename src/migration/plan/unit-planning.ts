@@ -69,6 +69,8 @@ export interface PlannedUnit {
   wave: number;
   /** Ids of the planned units this unit directly depends on (sorted). */
   dependsOnUnitIds: string[];
+  /** 'dev-only' when every member module is dev-support (benchmark/test/lint). */
+  necessity?: 'dev-only';
 }
 
 export interface UnitPlanningResult {
@@ -96,6 +98,8 @@ export function planUnits(
     const v = moduleById.get(moduleId)?.attrs?.symbolCount;
     return typeof v === 'number' ? v : 0;
   };
+  const devOnlyModule = (moduleId: string): boolean =>
+    moduleById.get(moduleId)?.attrs?.necessity === 'dev-only';
 
   let units: WorkUnit[] = [...order.units]
     .sort((a, b) => a.order - b.order)
@@ -105,6 +109,7 @@ export function planUnits(
       cyclic: u.cyclic,
       kind: 'module' as const,
       symbolCount: u.moduleIds.reduce((n, id) => n + symbolCountOf(id), 0),
+      devOnly: u.moduleIds.every((id) => devOnlyModule(id)),
     }));
 
   let merged = 0;
@@ -123,6 +128,7 @@ export function planUnits(
     const subUnits = opts.enabled ? trySplit(unit, graph, opts, filesByModuleId, fileSymbolCounts) : null;
     if (subUnits) {
       split++;
+      if (unit.devOnly) subUnits.forEach((s) => (s.necessity = 'dev-only'));
       out.push(...subUnits);
     } else {
       out.push({
@@ -135,6 +141,7 @@ export function planUnits(
         symbolCount: unit.symbolCount,
         wave: 0,
         dependsOnUnitIds: [],
+        ...(unit.devOnly ? { necessity: 'dev-only' as const } : {}),
       });
     }
   }
@@ -205,6 +212,8 @@ interface WorkUnit {
   cyclic: boolean;
   kind: 'module' | 'merged';
   symbolCount: number;
+  /** Every member module is dev-support (benchmark/test/lint). */
+  devOnly: boolean;
 }
 
 /** Declared module→module depends_on, projected onto the current units. */
@@ -392,6 +401,7 @@ function mergeUnits(members: WorkUnit[]): WorkUnit {
     cyclic: members.some((m) => m.cyclic),
     kind: 'merged',
     symbolCount: members.reduce((n, m) => n + m.symbolCount, 0),
+    devOnly: members.every((m) => m.devOnly),
   };
 }
 
@@ -408,10 +418,16 @@ function orderPlannedUnits(units: WorkUnit[], graph: MigrationGraph): WorkUnit[]
   const out: WorkUnit[] = [];
   const emitted = new Set<number>();
   while (out.length < units.length) {
+    // Product-first tie-break, then label — dev-support units sink below equally
+    // ready product units without violating any topological constraint.
     const ready = [...outstanding.entries()]
       .filter(([i, n]) => n === 0 && !emitted.has(i))
       .map(([i]) => i)
-      .sort((a, b) => units[a]!.label.localeCompare(units[b]!.label));
+      .sort(
+        (a, b) =>
+          Number(units[a]!.devOnly) - Number(units[b]!.devOnly) ||
+          units[a]!.label.localeCompare(units[b]!.label)
+      );
     if (ready.length === 0) {
       throw new Error('单元计划层聚合后出现依赖环(不应发生)——请用 --no-unit-planning 退回 1:1 工单并反馈');
     }

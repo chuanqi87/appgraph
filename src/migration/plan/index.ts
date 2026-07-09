@@ -56,6 +56,8 @@ export interface UnitPlan {
   wave: number;
   /** Ids of the units this unit directly depends on, sorted (schema ≥ 4). */
   dependsOnUnitIds: string[];
+  /** 'dev-only' when every member module is dev-support (benchmark/test/lint). */
+  necessity?: 'dev-only';
   /** Plan-dir-relative path of the rendered markdown brief. */
   briefFile: string;
   /** Plan-dir-relative path of the machine-readable acceptance contract. */
@@ -137,6 +139,7 @@ export function buildMigrationPlan(
       symbolCount: unit.symbolCount,
       wave: unit.wave,
       dependsOnUnitIds: unit.dependsOnUnitIds,
+      ...(unit.necessity ? { necessity: unit.necessity } : {}),
       briefFile: `units/${base}.md`,
       contractFile: `contracts/${base}.json`,
       modules,

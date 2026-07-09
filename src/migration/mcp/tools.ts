@@ -250,6 +250,12 @@ export class MigrateToolHandler {
           `plan --no-unit-planning 可退回模块 1:1)`
       );
     }
+    const devOnly = plan.units.filter((u) => u.necessity === 'dev-only');
+    if (devOnly.length > 0) {
+      lines.push(
+        `其中 ${devOnly.length} 个是开发支撑单元(基准测试/测试工具/lint,标 [开发支撑]),不进产品包,已在同波次内沉到产品单元之后 —— 可最后迁移或按需跳过。`
+      );
+    }
     lines.push('');
     for (const u of plan.units) {
       lines.push(`${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount} → ${u.briefFile}`);
@@ -707,10 +713,11 @@ function readText(file: string): string | null {
 }
 
 function unitMark(u: UnitPlan): string {
-  if (u.cyclic) return ' [SCC]';
-  if (u.kind === 'merged') return ' [聚合]';
-  if (u.kind === 'split') return ' [拆分]';
-  return '';
+  const dev = u.necessity === 'dev-only' ? ' [开发支撑]' : '';
+  if (u.cyclic) return ` [SCC]${dev}`;
+  if (u.kind === 'merged') return ` [聚合]${dev}`;
+  if (u.kind === 'split') return ` [拆分]${dev}`;
+  return dev;
 }
 
 function unitKindLabel(u: UnitPlan): string {

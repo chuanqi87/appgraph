@@ -30,6 +30,8 @@ export interface BriefUnit {
   /** Parallel wave + direct prerequisite unit ids (plan schema ≥ 4). */
   wave?: number;
   dependsOnUnitIds?: string[];
+  /** 'dev-only' when every member module is dev-support (benchmark/test/lint). */
+  necessity?: string;
 }
 
 /** How many split-unit member files to list verbatim before eliding. */
@@ -58,6 +60,12 @@ export function renderUnitBrief(
       refs.length === 0
         ? `**波次 ${unit.wave}** · 无前置单元,可立即开工(同波次单元可并行迁移)。`
         : `**波次 ${unit.wave}** · 前置单元:${refs.join('、')} —— 前置全部迁移完成后本单元即可开工;同波次单元可并行。`
+    );
+    lines.push('');
+  }
+  if (unit.necessity === 'dev-only') {
+    lines.push(
+      'ℹ 本单元是**开发支撑模块**(基准测试/测试工具/lint),不进产品包 —— 建议排在所有产品模块之后再迁移,或按需跳过。'
     );
     lines.push('');
   }
@@ -116,6 +124,7 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   const meta = [
     m.role ? `角色 ${m.role}` : '',
     m.layer ? `层 ${m.layer}` : '',
+    m.necessity === 'dev-only' ? '开发支撑(建议延后)' : '',
     m.symbolCount !== undefined ? `符号 ${m.symbolCount} 个` : '',
   ].filter(Boolean);
   if (meta.length) lines.push(`- ${meta.join(' · ')}`);

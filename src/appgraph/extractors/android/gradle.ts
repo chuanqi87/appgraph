@@ -101,7 +101,7 @@ export function buildModuleGraph(modules: GradleModule[]): GradleExtraction {
   for (const mod of modules) {
     const matchKey = `module:${slug(mod.path)}`;
     const id = makeNodeId('android', 'ArchModule', matchKey);
-    const { role, layer } = classifyModule(mod);
+    const { role, layer, necessity } = classifyModule(mod);
     nodes.push({
       id,
       kind: 'ArchModule',
@@ -113,7 +113,7 @@ export function buildModuleGraph(modules: GradleModule[]): GradleExtraction {
       provenance: 'manifest',
       fidelity: 'source-project',
       confidence: 1,
-      attrs: { dir: mod.dir, namespace: mod.namespace, role, layer },
+      attrs: { dir: mod.dir, namespace: mod.namespace, role, layer, necessity },
     });
     moduleDirToId.set(mod.dir, id);
     idBySlug.set(slug(mod.path), id);
@@ -159,15 +159,55 @@ function dirToGradlePath(dir: string): string {
   return `:${dir.split('/').join(':')}`;
 }
 
-/** Heuristic architecture role + layer from the module path segments. */
-function classifyModule(mod: GradleModule): { role: string; layer: string | null } {
+/**
+ * Whether a module ships in the product or only supports development.
+ *   - `product`  — real app code that must be migrated.
+ *   - `dev-only` — benchmark / test-support / lint modules; still migratable in
+ *     principle, but never on the critical path and safe to defer. Ordering
+ *     consumers sink these below product units and the brief flags them.
+ */
+export type ModuleNecessity = 'product' | 'dev-only';
+
+/**
+ * A dev-support role, if the module is one — matched on path segments before
+ * the product roles so a `:benchmarks` / `:core:testing` / `:lint` module is
+ * recognized regardless of where it sits in the tree. `null` = product code.
+ */
+function devOnlyRole(joined: string, segments: string[]): string | null {
+  const last = segments[segments.length - 1] ?? '';
+  if (/\b(benchmark|benchmarks|macrobenchmark|microbenchmark|baselineprofile)\b/.test(joined)) {
+    return 'benchmark';
+  }
+  if (/\blint\b/.test(joined)) return 'lint';
+  // A module that IS test-support infrastructure (`:core:testing`, `:sync:sync-test`,
+  // `:ui-test-hilt-manifest`) — distinct from a product module that merely has
+  // test-scoped deps (those stay product; B3 handles their edges).
+  if (/\b(testing|test-util|test-utils|test-fixtures|test-support)\b/.test(joined)) {
+    return 'test-support';
+  }
+  if (last === 'test' || /-test$/.test(last) || /^test-/.test(last)) return 'test-support';
+  return null;
+}
+
+/** Heuristic architecture role + layer + necessity from the module path segments. */
+function classifyModule(mod: GradleModule): {
+  role: string;
+  layer: string | null;
+  necessity: ModuleNecessity;
+} {
   const segments = mod.path.replace(/^:/, '').split(':');
   const first = segments[0] ?? '';
   const joined = segments.join(' ');
 
+  const dev = devOnlyRole(joined, segments);
   let role = 'library';
-  if (mod.applicationId || /\b(app|mobile|tv|wear)\b/.test(joined)) role = 'app';
-  else if (first === 'feature') role = 'feature';
+  let necessity: ModuleNecessity = 'product';
+  if (dev) {
+    role = dev;
+    necessity = 'dev-only';
+  } else if (mod.applicationId || /\b(app|mobile|tv|wear)\b/.test(joined)) {
+    role = 'app';
+  } else if (first === 'feature') role = 'feature';
   else if (first === 'core') role = 'core';
 
   let layer: string | null = null;
@@ -179,5 +219,5 @@ function classifyModule(mod: GradleModule): { role: string; layer: string | null
   if (segments[segments.length - 1] === 'api') layer = 'api';
   else if (segments[segments.length - 1] === 'impl') layer = 'impl';
 
-  return { role, layer };
+  return { role, layer, necessity };
 }

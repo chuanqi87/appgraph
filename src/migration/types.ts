@@ -54,6 +54,13 @@ export interface MigrationUnit {
   wave?: number;
   /** Unit ids this unit directly depends on (must migrate first), sorted. */
   dependsOn?: string[];
+  /**
+   * 'dev-only' when every member module is dev-support (benchmark/test/lint) —
+   * safe to defer past all product work. Absent = product (the default). Set
+   * only on all-dev-only units so schema-v1 readers and product units are
+   * unaffected.
+   */
+  necessity?: 'dev-only';
 }
 
 /** Bottom-up migration order over module SCCs (produced by `migrate order`). */

@@ -46,6 +46,12 @@ export function computeMigrationOrder(
 ): OrderResult {
   const moduleIds = new Set(modules.map((m) => m.id));
   const nameById = new Map(modules.map((m) => [m.id, m.name]));
+  // A module is dev-only support (benchmark/test/lint) when the extractor tagged
+  // it so. A unit counts as dev-only only when EVERY member is — a real product
+  // module fused into an SCC keeps the whole unit on the product track.
+  const devOnlyModule = new Set(
+    modules.filter((m) => m.attrs?.necessity === 'dev-only').map((m) => m.id)
+  );
 
   // Adjacency over module→module depends_on. Declared edges (provenance
   // 'manifest') are the DAG backbone; lifted edges join only when asked.
@@ -86,14 +92,22 @@ export function computeMigrationOrder(
   // Kahn from the sinks: emit an SCC once all its dependencies are emitted.
   const label = (i: number): string =>
     sccs[i]!.map((m) => nameById.get(m) ?? m).sort().join(',');
+  const sccIsDevOnly = (i: number): boolean => sccs[i]!.every((m) => devOnlyModule.has(m));
   const outstanding = new Map<number, number>();
   for (let i = 0; i < sccs.length; i++) outstanding.set(i, succ.get(i)!.size);
 
+  // Ready ties break product-first, then by label — so a dev-only leaf (a
+  // benchmark/test module that depends on nothing) never wins order 0 over a
+  // real product unit that is equally ready. Topology is untouched: this only
+  // orders units that are ALREADY free to emit together.
   const ready = (): number[] =>
     [...outstanding.entries()]
       .filter(([, n]) => n === 0)
       .map(([i]) => i)
-      .sort((a, b) => label(a).localeCompare(label(b)));
+      .sort(
+        (a, b) =>
+          Number(sccIsDevOnly(a)) - Number(sccIsDevOnly(b)) || label(a).localeCompare(label(b))
+      );
 
   const idOf = (i: number): string => unitId([...sccs[i]!].sort());
 
@@ -116,6 +130,7 @@ export function computeMigrationOrder(
         cyclic: members.length > 1,
         wave,
         dependsOn: [...succ.get(i)!].map(idOf).sort(),
+        ...(sccIsDevOnly(i) ? { necessity: 'dev-only' as const } : {}),
       });
       for (const p of pred.get(i)!) {
         if (!emitted.has(p)) outstanding.set(p, (outstanding.get(p) ?? 1) - 1);
