@@ -1223,6 +1223,19 @@ export class CodeGraph {
     return this.queries.getIncomingEdges(nodeId);
   }
 
+  /**
+   * Paginated, globally-filterable edge browser (by kind/provenance) — unlike
+   * getOutgoingEdges/getIncomingEdges, not scoped to a single node. Backs the
+   * web UI's edge table.
+   */
+  listEdges(
+    filter: { kind?: Edge['kind']; provenance?: string } = {},
+    limit: number = 100,
+    offset: number = 0
+  ): { edges: Edge[]; total: number } {
+    return this.queries.listEdges(filter, limit, offset);
+  }
+
   // ===========================================================================
   // File Operations
   // ===========================================================================

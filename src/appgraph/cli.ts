@@ -199,7 +199,35 @@ function buildProgram(): Command {
     .option('-o, --out <file>', '应用图 JSON 路径')
     .action((pathArg: string, options: { out?: string }) => cmdCapabilities(pathArg, options));
 
+  program
+    .command('ui [path]')
+    .description('启动本地 Web UI 浏览应用知识图谱(默认停在 AppGraph 标签页,可切换到 CodeGraph)')
+    .option('-p, --port <number>', '首选端口(被占用时自动改用空闲端口)')
+    .option('--host <address>', '监听地址', '127.0.0.1')
+    .option('--no-open', '不自动打开浏览器')
+    .action((pathArg: string | undefined, options: { port?: string; host: string; open: boolean }) =>
+      cmdUi(pathArg, options)
+    );
+
   return program;
+}
+
+async function cmdUi(
+  pathArg: string | undefined,
+  options: { port?: string; host: string; open: boolean }
+): Promise<void> {
+  const root = path.resolve(pathArg ?? '.');
+  // Shares the exact server `codegraph ui` starts — same JSON API, same
+  // client — this command only differs by which tab it opens to.
+  const { startWebUiServer } = await import('../webui/server');
+  const server = await startWebUiServer(root, {
+    port: options.port ? parseInt(options.port, 10) : undefined,
+    host: options.host,
+    open: options.open,
+    initialLayer: 'appgraph',
+  });
+  console.log(`Web UI 运行于 ${server.url}`);
+  console.log('按 Ctrl+C 停止');
 }
 
 async function main(): Promise<void> {

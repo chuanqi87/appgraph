@@ -1043,6 +1043,32 @@ program
   });
 
 /**
+ * codegraph ui [path]
+ */
+program
+  .command('ui [path]')
+  .description('Launch a local web UI to browse the CodeGraph/AppGraph knowledge graph')
+  .option('-p, --port <number>', 'Preferred port (falls back to a free one if taken)')
+  .option('--host <address>', 'Bind address', '127.0.0.1')
+  .option('--no-open', 'Do not auto-open the browser')
+  .action(async (pathArg: string | undefined, options: { port?: string; host: string; open: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      const { startWebUiServer } = await import('../webui/server');
+      const server = await startWebUiServer(projectPath, {
+        port: options.port ? parseInt(options.port, 10) : undefined,
+        host: options.host,
+        open: options.open,
+      });
+      success(`Web UI running at ${chalk.cyan(server.url)}`);
+      info('Press Ctrl+C to stop');
+    } catch (err) {
+      error(`Failed to start web UI: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph query <search>
  */
 program

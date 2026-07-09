@@ -1521,6 +1521,39 @@ export class QueryBuilder {
   }
 
   /**
+   * Paginated, globally-filterable edge browser (by kind/provenance) — unlike
+   * getOutgoingEdges/getIncomingEdges, not scoped to one node's source/target.
+   * Backs the web UI's edge table (e.g. "show all heuristic android-intent
+   * edges"). Reuses idx_edges_kind / idx_edges_provenance.
+   */
+  listEdges(
+    filter: { kind?: EdgeKind; provenance?: string } = {},
+    limit: number = 100,
+    offset: number = 0
+  ): { edges: Edge[]; total: number } {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (filter.kind) {
+      where.push('kind = ?');
+      params.push(filter.kind);
+    }
+    if (filter.provenance) {
+      where.push('provenance = ?');
+      params.push(filter.provenance);
+    }
+    const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+
+    const totalRow = this.db
+      .prepare(`SELECT COUNT(*) as count FROM edges${whereSql}`)
+      .get(...params) as { count: number };
+    const rows = this.db
+      .prepare(`SELECT * FROM edges${whereSql} ORDER BY id LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as EdgeRow[];
+
+    return { edges: rows.map(rowToEdge), total: totalRow.count };
+  }
+
+  /**
    * Find all edges where both source and target are in the given node set.
    * Useful for recovering inter-node connectivity after BFS.
    */

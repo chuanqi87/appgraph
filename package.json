@@ -15,9 +15,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-assets && node -e \"const fs=require('fs');fs.chmodSync('dist/bin/codegraph.js', 0o755);fs.chmodSync('dist/migration/cli.js', 0o755);fs.chmodSync('dist/appgraph/cli.js', 0o755)\"",
+    "build": "tsc && npm run copy-assets && npm run build:webui && node -e \"const fs=require('fs');fs.chmodSync('dist/bin/codegraph.js', 0o755);fs.chmodSync('dist/migration/cli.js', 0o755);fs.chmodSync('dist/appgraph/cli.js', 0o755)\"",
     "preuninstall": "node dist/bin/uninstall.js",
     "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f))\"",
+    "build:webui": "tsc --noEmit -p src/webui/client/tsconfig.json && node scripts/build-webui.mjs",
     "dev": "tsc --watch",
     "cli": "npm run build && node dist/bin/codegraph.js",
     "test": "vitest run",
@@ -52,6 +53,9 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.19.30",
     "@types/picomatch": "^4.0.2",
+    "esbuild": "^0.28.1",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "sigma": "^3.0.3",
     "typescript": "^5.0.0",
     "vitest": "^2.1.9"
   },
