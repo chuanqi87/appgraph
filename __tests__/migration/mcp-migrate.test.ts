@@ -211,7 +211,7 @@ function textOf(r: ToolResult): string {
 // --- tool handler -------------------------------------------------------------
 
 describe('migrate MCP · tools', () => {
-  it('exposes exactly the 10 tools, each with an object schema', () => {
+  it('exposes exactly the 11 tools, each with an object schema', () => {
     expect(MIGRATE_TOOLS.map((t) => t.name)).toEqual([
       'migrate_order',
       'migrate_unit',
@@ -223,6 +223,7 @@ describe('migrate MCP · tools', () => {
       'app_nav',
       'app_features',
       'app_modules',
+      'migrate_label',
     ]);
     for (const t of MIGRATE_TOOLS) {
       expect(t.description.length).toBeGreaterThan(20);
@@ -403,7 +404,7 @@ describe('migrate MCP · server routing', () => {
 
     await t.emit({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     const tools = (t.results.get(2) as { tools: Array<{ name: string }> }).tools;
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11);
 
     await t.emit({
       jsonrpc: '2.0',

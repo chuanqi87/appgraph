@@ -31,3 +31,10 @@ export function getVerifyUnitsDir(projectRoot: string): string {
 export function getLedgerRemapPath(projectRoot: string): string {
   return join(getMigrationDir(projectRoot), 'ledger-remap.json');
 }
+
+/** LLM semantic labels sidecar (P1-3b) — Feature/unit names + descriptions the
+ *  calling agent writes back through `migrate_label`. Kept out of the graph so
+ *  the deterministic fingerprint is unaffected. */
+export function getLabelsPath(projectRoot: string): string {
+  return join(getMigrationDir(projectRoot), 'labels.json');
+}

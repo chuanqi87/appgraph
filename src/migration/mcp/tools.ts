@@ -15,12 +15,20 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { AppNode, slug } from '../../appgraph/schema';
 import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
-import { getLedgerPath, getMigrationDir, getPlanDir, getVerifyUnitsDir } from '../paths';
+import { getLabelsPath, getLedgerPath, getMigrationDir, getPlanDir, getVerifyUnitsDir } from '../paths';
 import { migrationGraphPath, readMigrationGraph } from '../serialize';
 import { MigrationGraph } from '../types';
 import { MigrationPlan, UnitPlan } from '../plan';
 import { resolveUnit } from '../plan/resolve';
 import { readLedger, Ledger, LedgerEntry } from '../ledger';
+import {
+  emptyLabelStore,
+  LABEL_SUMMARY_MAX,
+  LabelStore,
+  readLabelStore,
+  validateLabel,
+  writeLabelStore,
+} from '../labels';
 import { UnitContract } from '../plan/contract';
 import { UnitVerifyReport } from '../verify/unit';
 
@@ -163,6 +171,27 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
       '模块依赖图全景:每个 Gradle 模块的角色/层/必要性(产品|开发支撑)/符号量,及其声明依赖邻接表(自底向上)。不需精确模块名,是 migrate_module_facts 的入口 —— 先用它看全局,再对具体模块查 facts。',
     inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
   },
+  {
+    name: 'migrate_label',
+    description:
+      '【写入】回填功能簇(Feature)或迁移单元的语义标注 —— 你可另起一个分析 Agent 读源码/工单后,把“语义名 + 一句话功能描述”写回。这是唯一的写入通道,受严格质量校验(summary 必填、单行、≤' +
+      LABEL_SUMMARY_MAX +
+      ' 字;target 必须命中真实 Feature/单元),不合格只返回引导不写入。标注存于 sidecar(provenance=llm),不进确定性图谱/指纹,仅用于展示。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: ['feature', 'unit'], description: '标注对象类型' },
+        key: {
+          type: 'string',
+          description: 'feature:Feature 的 sig 或 hub 名;unit:单元序号/id/label/成员模块名',
+        },
+        name: { type: 'string', description: '(可选)语义名,≤60 字,单行' },
+        summary: { type: 'string', description: '一句话功能描述(必填,单行,≤' + LABEL_SUMMARY_MAX + ' 字)' },
+        ...PROJECT_PATH_PROP,
+      },
+      required: ['target', 'key', 'summary'],
+    },
+  },
 ];
 
 const PIPELINE_HINT =
@@ -213,6 +242,14 @@ export class MigrateToolHandler {
         return this.appFeatures(root);
       case 'app_modules':
         return this.appModules(root);
+      case 'migrate_label':
+        return this.label(
+          root,
+          typeof args.target === 'string' ? args.target : '',
+          typeof args.key === 'string' ? args.key : '',
+          typeof args.name === 'string' ? args.name : undefined,
+          typeof args.summary === 'string' ? args.summary : ''
+        );
       default:
         throw new Error(`未知工具:${name}`);
     }
@@ -264,10 +301,13 @@ export class MigrateToolHandler {
         `其中 ${devOnly.length} 个是开发支撑单元(基准测试/测试工具/lint,标 [开发支撑]),不进产品包,已在同波次内沉到产品单元之后 —— 可最后迁移或按需跳过。`
       );
     }
+    const labels = readLabelStore(getLabelsPath(root));
     lines.push('');
     for (const u of plan.units) {
+      const label = labels?.units[u.id];
+      const ai = label ? ` 〔AI:${label.name ? `${label.name} — ` : ''}${label.summary}〕` : '';
       lines.push(
-        `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount}${tokenNote(u)} → ${u.briefFile}`
+        `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount}${tokenNote(u)}${ai} → ${u.briefFile}`
       );
     }
     lines.push('');
@@ -638,14 +678,22 @@ export class MigrateToolHandler {
         (members.get(e.from) ?? members.set(e.from, []).get(e.from)!).push(to.name);
       }
     }
+    const labels = readLabelStore(getLabelsPath(root));
     const features = graph.nodes.filter((n) => n.kind === 'Feature').sort(byName);
     const lines = [`Feature ${features.length} 个:`];
+    let labelled = 0;
     for (const f of features.slice(0, MAX_LIST)) {
       const ms = (members.get(f.id) ?? []).sort();
       // A weak (low-trust) cross-module grab-bag is flagged so the agent knows
       // not to treat it as one coherent feature.
       const weak = f.attrs?.weak === true ? ' ⚠低置信(跨模块杂合,勿当作单一功能)' : '';
-      lines.push(`  · ${f.name}${weak}${ms.length ? `: ${ms.join(', ')}` : ''}`);
+      const label = labels?.features[String(f.attrs?.sig ?? '')];
+      const ai = label ? ` 〔AI:${label.name ? `${label.name} — ` : ''}${label.summary}〕` : '';
+      if (label) labelled++;
+      lines.push(`  · ${f.name}${weak}${ai}${ms.length ? `: ${ms.join(', ')}` : ''}`);
+    }
+    if (labels && labelled < Math.min(features.length, MAX_LIST)) {
+      lines.push('提示:未标注的功能簇可另起分析 Agent 用 migrate_label 回填语义名/描述。');
     }
     if (features.length > MAX_LIST) lines.push(`  … 及另外 ${features.length - MAX_LIST} 个`);
     return text(lines.join('\n'));
@@ -701,6 +749,53 @@ export class MigrateToolHandler {
     lines.push('');
     lines.push('看某模块完整事实用 migrate_module_facts {"module":"<模块名>"}。');
     return text(lines.join('\n'));
+  }
+
+  /**
+   * Controlled LLM label write-back (P1-3b). Resolves the target to a REAL
+   * Feature sig / unit id, runs the strict quality gate, and persists to the
+   * labels sidecar. Every failure (unknown target, bad input) returns
+   * success-shaped guidance — a rejected write is "fix your input", not a reason
+   * to abandon the server.
+   */
+  private label(root: string, target: string, key: string, name: string | undefined, summary: string): ToolResult {
+    if (target !== 'feature' && target !== 'unit') {
+      return text('target 必须是 "feature" 或 "unit"。feature 标注功能簇,unit 标注迁移单元。');
+    }
+    const graph = this.loadGraph(root);
+    if (!graph) return text(PIPELINE_HINT);
+
+    // Resolve the key to a real target id/sig BEFORE validating content.
+    let resolvedKey: string;
+    let resolvedLabel: string;
+    if (target === 'feature') {
+      const feature = resolveFeature(graph, key);
+      if (!feature) {
+        const names = graph.nodes.filter((n) => n.kind === 'Feature').slice(0, 15).map((f) => `${f.name}(${f.attrs?.sig ?? '?'})`);
+        return text(`未找到功能簇 “${key}”。用 app_features 查看可标注的 Feature(名/sig):\n${names.join('\n')}`);
+      }
+      resolvedKey = String(feature.attrs?.sig ?? feature.matchKey);
+      resolvedLabel = feature.name;
+    } else {
+      const plan = this.loadPlan(root);
+      if (!plan) return text(PLAN_HINT);
+      const unit = resolveUnit(plan, key);
+      if (!unit) return text(`未找到单元 “${key}”。用 migrate_order 查看单元序号/label。`);
+      resolvedKey = unit.id;
+      resolvedLabel = `${unit.order + 1}. ${unit.label}`;
+    }
+
+    const result = validateLabel({ name, summary });
+    if ('error' in result) return text(`标注未写入:${result.error}`);
+
+    const path = getLabelsPath(root);
+    const store: LabelStore = readLabelStore(path) ?? emptyLabelStore();
+    const bucket = target === 'feature' ? store.features : store.units;
+    bucket[resolvedKey] = result.entry;
+    writeLabelStore(path, store);
+
+    const shown = result.entry.name ? `${result.entry.name} — ${result.entry.summary}` : result.entry.summary;
+    return text(`已写回${target === 'feature' ? '功能簇' : '单元'} 标注 · ${resolvedLabel}\n  ${shown}\n(provenance=llm,存于 labels.json,不影响图谱确定性)`);
   }
 }
 
@@ -847,6 +942,18 @@ function unitNeighbors(
     }
   }
   return { prerequisites, dependents };
+}
+
+/** Resolve a Feature by its sig (exact) or hub name (exact, then unique substring). */
+function resolveFeature(graph: MigrationGraph, query: string): AppNode | null {
+  const features = graph.nodes.filter((n) => n.kind === 'Feature');
+  const q = query.trim();
+  const bySig = features.find((f) => String(f.attrs?.sig ?? '') === q);
+  if (bySig) return bySig;
+  const byName = features.filter((f) => f.name === q);
+  if (byName.length === 1) return byName[0]!;
+  const near = features.filter((f) => q.length >= 3 && f.name.includes(q));
+  return near.length === 1 ? near[0]! : null;
 }
 
 function findByName(modules: AppNode[], query: string): AppNode | null {

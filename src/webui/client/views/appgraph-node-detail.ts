@@ -80,7 +80,7 @@ function nodeDetailFor(
 
 function header(model: AppGraphModel, node: AppNodeWire): HTMLElement {
   const role = node.kind === 'Feature' ? roleOf(node) : node.subtype;
-  const roleTone = node.kind === 'Feature' ? featureRoleTone(role) : null;
+  const roleTone = node.kind === 'Feature' && role ? featureRoleTone(role) : null;
   return el('div', { class: 'detail-header' }, [
     colorChip(node.kind, nodeColor(node.kind)),
     el('h2', { class: 'detail-title' }, [node.name]),

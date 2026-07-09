@@ -29,7 +29,11 @@ export const MIGRATE_SERVER_INSTRUCTIONS = `# migrate — Android→HarmonyOS �
 6. **app_modules / app_screens / app_nav / app_features** — 应用总览:模块依赖图全景
    (角色/层/必要性/符号量/邻接,是 migrate_module_facts 的入口)、屏幕清单+跳转、
    navigates_to 页面图、功能簇。想从“产品/功能/模块”角度而非单个符号快速看懂这个 App 时用。
-7. 迁移完一个单元后,在源工程运行 \`migrate verify <源> --target <目标工程> --unit <单元>\`(单元级)
+7. **migrate_label**(写入)— 图谱本身是确定性的、不含 LLM 猜测;若想补语义名/功能描述,
+   可另起一个分析 Agent 读源码+工单,再用本工具把「语义名 + 一句话描述」回填到功能簇/单元。
+   写入受严格质量校验(单行、限长、target 必须命中真实对象),存于 sidecar 不进图谱指纹,
+   仅在 app_features / migrate_order 展示。这是唯一的写入通道。
+8. 迁移完一个单元后,在源工程运行 \`migrate verify <源> --target <目标工程> --unit <单元>\`(单元级)
    或不带 \`--unit\`(全量),然后用 **migrate_verify_gaps**(带 unit 参数看单元报告)查看缺口。
    单元缺口分三类:**unit-missing**(已登记迁移却缺失,真缺口,必修)、**dependency-missing**
    (依赖单元还没迁,先迁依赖)、**not-migrated**(本单元还没登记迁移,不是缺口)。
