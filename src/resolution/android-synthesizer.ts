@@ -161,3 +161,134 @@ export function composeRouteEdges(ctx: ResolutionContext): Edge[] {
   }
   return edges;
 }
+
+// --- seam 3c · compose-state (recomposition) ----------------------------------
+
+/** Reactive containers whose write recomposes any collector (the `.value=`/`.update` family). */
+const REACTIVE_MARKER =
+  /\b(?:MutableStateFlow|StateFlow|MutableLiveData|LiveData|mutableStateOf|MutableState|derivedStateOf|mutableIntStateOf|mutableLongStateOf|mutableFloatStateOf|mutableDoubleStateOf)\b/;
+/** A reactive property declared by assignment: `val _s = MutableStateFlow(…)`. */
+const REACTIVE_ASSIGN_RE =
+  /\b(?:val|var)\s+(\w+)\s*(?::[^=\n]+)?=\s*(?:remember\s*\{\s*)?(?:MutableStateFlow|mutableStateOf|MutableLiveData|derivedStateOf|mutableIntStateOf|mutableLongStateOf|mutableFloatStateOf|mutableDoubleStateOf)\b/g;
+/** A reactive property declared by type: `val s: StateFlow<T>`. */
+const REACTIVE_TYPED_RE =
+  /\b(?:val|var)\s+(\w+)\s*:\s*(?:MutableStateFlow|StateFlow|MutableLiveData|LiveData|MutableState|State)\s*</g;
+/** A Compose delegate property: `var count by mutableStateOf(0)` — written as `count = …`. */
+const REACTIVE_DELEGATE_RE =
+  /\b(?:val|var)\s+(\w+)\s+by\s+(?:remember\s*\{\s*)?(?:mutableStateOf|mutableIntStateOf|mutableLongStateOf|mutableFloatStateOf|mutableDoubleStateOf|derivedStateOf)\b/g;
+
+/** A ViewModel feeding more than this many composables is app-wide routing, not a static pair. */
+const COMPOSE_STATE_FANOUT_CAP = 8;
+
+function sliceLines(content: string, startLine: number, endLine: number): string {
+  return content.split('\n').slice(startLine - 1, endLine).join('\n');
+}
+
+function escapeAlt(names: string[]): string {
+  return names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+}
+
+interface Composable {
+  node: Node;
+  /** Signature header (decl → first `{`), for param-type detection. */
+  header: string;
+  /** Full source, for `viewModel<T>()` detection. */
+  body: string;
+}
+
+/**
+ * A ViewModel method that WRITES reactive state → every `@Composable` that
+ * COLLECTS that ViewModel's state (recomposition — the Compose analog of
+ * react-render / arkui-state). Cross-class, so it pairs on the ViewModel TYPE:
+ *   - the writer side is assignment-gated on the class's OWN reactive property
+ *     names (`_x.value=` / `.update{` / `.postValue(` / `.emit(`), so a read-only
+ *     method or a class with no reactive state contributes nothing;
+ *   - the collector side is a composable that takes the ViewModel as a parameter
+ *     (`vm: FooViewModel`) or obtains it via `viewModel<FooViewModel>()`.
+ * A ViewModel with more than the fan-out cap of collectors is skipped (app-wide).
+ */
+export function composeStateEdges(ctx: ResolutionContext): Edge[] {
+  // Precompute every @Composable's source once.
+  const composables: Composable[] = [];
+  for (const kind of ['function', 'method'] as const) {
+    for (const n of ctx.getNodesByKind(kind)) {
+      if (!Array.isArray(n.decorators) || !n.decorators.includes('Composable')) continue;
+      const content = ctx.readFile(n.filePath);
+      if (!content) continue;
+      const full = stripCommentsForRegex(sliceLines(content, n.startLine, n.endLine), 'java');
+      const braceAt = full.indexOf('{');
+      composables.push({ node: n, header: braceAt >= 0 ? full.slice(0, braceAt) : full, body: full });
+    }
+  }
+  if (composables.length === 0) return [];
+
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+
+  for (const cls of ctx.getNodesByKind('class')) {
+    if (!cls.filePath.endsWith('.kt')) continue;
+    const content = ctx.readFile(cls.filePath);
+    if (!content) continue;
+    const classSrc = stripCommentsForRegex(sliceLines(content, cls.startLine, cls.endLine), 'java');
+    if (!REACTIVE_MARKER.test(classSrc)) continue;
+
+    // Reactive property names owned by this class (backing + delegate).
+    const props = new Set<string>();
+    for (const re of [REACTIVE_ASSIGN_RE, REACTIVE_TYPED_RE, REACTIVE_DELEGATE_RE]) {
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(classSrc)) !== null) props.add(m[1]!);
+    }
+    if (props.size === 0) continue;
+    const propAlt = escapeAlt([...props]);
+    // `_x.value = …` / `.update {(` / `.postValue(` / `.emit(` on one of THIS class's props.
+    const writeGate = new RegExp(
+      `\\b(?:${propAlt})\\s*\\.\\s*(?:value\\s*=(?!=)|update\\s*[({]|postValue\\s*\\(|emit\\s*\\(|tryEmit\\s*\\()`
+    );
+
+    // Collectors of THIS ViewModel: param-typed or viewModel<T>()-obtained.
+    const typeName = cls.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const paramRe = new RegExp(`:\\s*${typeName}\\b`);
+    const obtainRe = new RegExp(
+      `(?:hilt)?[vV]iewModel\\s*<\\s*${typeName}\\b|:\\s*${typeName}\\s*=\\s*(?:hilt)?[vV]iewModel\\s*\\(`
+    );
+    const collectors = composables.filter(
+      (c) => paramRe.test(c.header) || obtainRe.test(c.body)
+    );
+    if (collectors.length === 0 || collectors.length > COMPOSE_STATE_FANOUT_CAP) continue;
+
+    // Writer methods of this class (same file, within the class line span).
+    const methods = ctx
+      .getNodesInFile(cls.filePath)
+      .filter(
+        (n) =>
+          n.kind === 'method' &&
+          n.id !== cls.id &&
+          n.startLine >= cls.startLine &&
+          n.endLine <= cls.endLine
+      );
+    for (const method of methods) {
+      const body = stripCommentsForRegex(sliceLines(content, method.startLine, method.endLine), 'java');
+      if (!writeGate.test(body)) continue;
+      for (const collector of collectors) {
+        if (method.id === collector.node.id) continue;
+        const key = `${method.id}>${collector.node.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: method.id,
+          target: collector.node.id,
+          kind: 'calls',
+          line: method.startLine,
+          provenance: 'heuristic',
+          metadata: {
+            synthesizedBy: 'compose-state',
+            via: cls.name,
+            registeredAt: `${collector.node.filePath}:${collector.node.startLine}`,
+          },
+        });
+      }
+    }
+  }
+  return edges;
+}

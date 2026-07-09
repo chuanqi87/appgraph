@@ -154,3 +154,73 @@ import androidx.compose.runtime.Composable
     expect(synthPairs(reader!, ['compose-route'])).toEqual([]);
   });
 });
+
+describe('compose-state synthesis (seam 3c)', () => {
+  let root: string | undefined;
+  let reader: CodeSymbolGraph | undefined;
+  afterEach(() => {
+    reader?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+    root = reader = undefined;
+  });
+
+  const VM = `package com.x
+import kotlinx.coroutines.flow.MutableStateFlow
+class FooViewModel {
+  private val _uiState = MutableStateFlow(UiState())
+  val uiState = _uiState
+  fun refresh() { _uiState.value = UiState(loading = true) }
+  fun tweak() { _uiState.update { it.copy(loading = false) } }
+  fun readOnly(): Int { return _uiState.value.count }
+}
+`;
+
+  it('links a state-writing VM method to its collector composables (param + viewModel<T>)', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/FooViewModel.kt': VM,
+      'app/src/main/java/com/x/Screen.kt': `package com.x
+import androidx.compose.runtime.Composable
+import androidx.lifecycle.viewmodel.compose.viewModel
+@Composable fun FeedScreen(vm: FooViewModel) {
+  val s = vm.uiState.collectAsState()
+  Button(onClick = { vm.refresh() }) {}
+}
+@Composable fun HomeScreen() {
+  val vm: FooViewModel = viewModel()
+  val s = vm.uiState.collectAsState()
+}
+@Composable fun Unrelated() {}
+`,
+    }));
+    const pairs = synthPairs(reader!, ['compose-state']);
+    // Both writers reach both collectors (recomposition).
+    expect(pairs).toContainEqual({ by: 'compose-state', from: 'refresh', to: 'FeedScreen' });
+    expect(pairs).toContainEqual({ by: 'compose-state', from: 'refresh', to: 'HomeScreen' });
+    expect(pairs).toContainEqual({ by: 'compose-state', from: 'tweak', to: 'FeedScreen' });
+    // A read-only method never recomposes.
+    expect(pairs.some((p) => p.from === 'readOnly')).toBe(false);
+    // A composable that doesn't collect this VM gets nothing.
+    expect(pairs.some((p) => p.to === 'Unrelated')).toBe(false);
+  });
+
+  it('precision: a VM feeding more than the fan-out cap of composables is skipped', async () => {
+    const screens = Array.from({ length: 9 }, (_, i) =>
+      `@Composable fun Screen${i}(vm: BigViewModel) { val s = vm.uiState.collectAsState() }`
+    ).join('\n');
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/BigViewModel.kt': `package com.x
+import kotlinx.coroutines.flow.MutableStateFlow
+class BigViewModel {
+  private val _uiState = MutableStateFlow(0)
+  fun bump() { _uiState.value = 1 }
+}
+`,
+      'app/src/main/java/com/x/Screens.kt': `package com.x
+import androidx.compose.runtime.Composable
+${screens}
+`,
+    }));
+    // 9 collectors > cap(8) → the whole VM is skipped (app-wide state, not a static pair).
+    expect(synthPairs(reader!, ['compose-state'])).toEqual([]);
+  });
+});
