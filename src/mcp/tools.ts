@@ -30,6 +30,7 @@ import {
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
+import { loadAppGraphIndex, annotateSymbol } from '../appgraph/annotate';
 
 /**
  * An expected, recoverable "codegraph can't serve this" condition — most
@@ -1849,6 +1850,53 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'compose-route') {
+      const route = m.event ? `\`${String(m.event)}\`` : 'a route';
+      return {
+        label: `Compose nav — navigate(${route}) → NavHost destination (dynamic dispatch)`,
+        compact: `dynamic: Compose navigate ${m.event ? String(m.event) : ''}${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'compose-state') {
+      const vm = m.via ? `\`${String(m.via)}\`` : 'a ViewModel';
+      return {
+        label: `Compose recomposition — ${vm} state write re-runs the collector composable (dynamic dispatch)`,
+        compact: `dynamic: Compose ${m.via ? String(m.via) : ''} state → recompose${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'android-intent') {
+      const kind = m.via === 'startService' ? 'service' : 'Activity';
+      return {
+        label: `Android intent — starts the target ${kind} (dynamic dispatch)`,
+        compact: `dynamic: Android intent → ${kind}${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'arkui-route') {
+      const url = m.event ? `\`${String(m.event)}\`` : 'a page';
+      return {
+        label: `ArkUI router — pushUrl(${url}) → @Entry page (dynamic dispatch)`,
+        compact: `dynamic: ArkUI router ${m.event ? String(m.event) : ''}${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'arkui-state') {
+      return {
+        label: `ArkUI state → build — @State write re-runs the struct's build() (dynamic dispatch)`,
+        compact: `dynamic: ArkUI state → build${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'arkui-emitter') {
+      const ev = m.event ? `\`${String(m.event)}\`` : 'an event';
+      return {
+        label: `ArkUI emitter — event ${ev} emit → handler (dynamic dispatch)`,
+        compact: `dynamic: ArkUI emitter ${m.event ? String(m.event) : ''}${at}`,
+        registeredAt,
+      };
+    }
     // Generic fallback for any other synthesizer (redux-thunk, gin-middleware-chain,
     // flutter-build, …): a synthesized hop must never read as a bare static `calls`.
     // It's a dynamic-dispatch bridge — label it as one and keep its wiring site.
@@ -3658,7 +3706,29 @@ export class ToolHandler {
       : `Found ${subgraph.nodes.size} symbol${subgraph.nodes.size === 1 ? '' : 's'} across ${fileGroups.size} file${fileGroups.size === 1 ? '' : 's'}.`;
     finalText = finalText.replace(SUMMARY_SENTINEL, summaryLine);
 
+    // AppGraph consumer channel: if the project has a `.appgraph/`, append the
+    // app-semantic facts (Screen / launcher entry + navigates_to) for any
+    // explored symbol. Zero-cost silent no-op when absent.
+    finalText += this.appGraphFacts(projectRoot, subgraph);
+
     return this.textResult(finalText);
+  }
+
+  /** App facts for the explored symbols, or '' when there is no `.appgraph/`. */
+  private appGraphFacts(projectRoot: string, subgraph: Subgraph): string {
+    const index = loadAppGraphIndex(projectRoot);
+    if (!index) return '';
+    const facts: string[] = [];
+    const seen = new Set<string>();
+    for (const node of subgraph.nodes.values()) {
+      const fact = annotateSymbol(index, node.name);
+      if (fact && !seen.has(fact)) {
+        seen.add(fact);
+        facts.push(fact);
+        if (facts.length >= 12) break;
+      }
+    }
+    return facts.length ? `\n\n${facts.sort().join('\n')}` : '';
   }
 
   /**
