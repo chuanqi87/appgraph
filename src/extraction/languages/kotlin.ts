@@ -68,6 +68,25 @@ function isFunInterfaceNode(node: SyntaxNode): boolean {
   return hasFun && hasInterfaceType;
 }
 
+/**
+ * Simple name of a Kotlin annotation node — the last `type_identifier` under it,
+ * so `@Composable` → "Composable" and `@androidx.compose.Composable` → the
+ * "Composable" tail. Argument forms (`@Named("x")`, `@Provides`) are unaffected
+ * because the name is the annotation TYPE, not its value arguments.
+ */
+function kotlinAnnotationSimpleName(annotation: SyntaxNode): string | undefined {
+  let name: string | undefined;
+  const visit = (n: SyntaxNode): void => {
+    if (n.type === 'type_identifier') name = n.text;
+    for (let i = 0; i < n.namedChildCount; i++) {
+      const c = n.namedChild(i);
+      if (c) visit(c);
+    }
+  };
+  visit(annotation);
+  return name;
+}
+
 export const kotlinExtractor: LanguageExtractor = {
   functionTypes: ['function_declaration'],
   classTypes: ['class_declaration'],
@@ -314,23 +333,33 @@ export const kotlinExtractor: LanguageExtractor = {
     return false;
   },
   extractModifiers: (node) => {
-    // Kotlin Multiplatform `expect`/`actual` markers live in
-    //   modifiers > platform_modifier > (expect | actual)
-    // Capturing them lets the resolver link an `expect` declaration in a
-    // common source set to its `actual` implementations in platform source
-    // sets (those impls otherwise have zero dependents — the caller resolves
-    // to the `expect`). Match the AST node, not raw text, so an annotation
-    // argument or identifier named "actual" can't false-positive.
+    // Two kinds of marker live under a declaration's `modifiers` child, both
+    // surfaced on `node.decorators` (see tree-sitter.ts createNode):
+    //   1. Kotlin Multiplatform `expect`/`actual` (modifiers > platform_modifier
+    //      > expect|actual) — lets the resolver link an `expect` declaration to
+    //      its platform `actual` impls (import-resolver reads
+    //      `decorators.includes('expect')`; those impls otherwise have zero
+    //      dependents — the caller resolves to the `expect`).
+    //   2. Annotation simple names (modifiers > annotation > … > type_identifier)
+    //      — `@Composable`/`@HiltViewModel`/`@Inject`/`@Binds`/`@Module`… become
+    //      queryable facts the Compose/DI resolvers key off (e.g. compose-state
+    //      finds `@Composable` functions).
+    // Match AST nodes, not raw text, so an argument or identifier named "actual"
+    // can't false-positive.
     const mods: string[] = [];
     for (let i = 0; i < node.childCount; i++) {
-      const child = node.child(i);
-      if (child?.type !== 'modifiers') continue;
-      for (let j = 0; j < child.childCount; j++) {
-        const pm = child.child(j);
-        if (pm?.type !== 'platform_modifier') continue;
-        for (let k = 0; k < pm.childCount; k++) {
-          const kw = pm.child(k);
-          if (kw && (kw.type === 'expect' || kw.type === 'actual')) mods.push(kw.type);
+      const modifiers = node.child(i);
+      if (modifiers?.type !== 'modifiers') continue;
+      for (let j = 0; j < modifiers.childCount; j++) {
+        const m = modifiers.child(j);
+        if (m?.type === 'platform_modifier') {
+          for (let k = 0; k < m.childCount; k++) {
+            const kw = m.child(k);
+            if (kw && (kw.type === 'expect' || kw.type === 'actual')) mods.push(kw.type);
+          }
+        } else if (m?.type === 'annotation') {
+          const name = kotlinAnnotationSimpleName(m);
+          if (name) mods.push(name);
         }
       }
     }
