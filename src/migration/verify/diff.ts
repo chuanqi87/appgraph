@@ -346,6 +346,7 @@ function mkAppGraph(
     nodes,
     edges: [],
     coverageWarnings: [],
+    navFrameworks: [],
   };
 }
 

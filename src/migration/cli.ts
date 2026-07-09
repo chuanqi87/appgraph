@@ -65,12 +65,30 @@ import {
   writeMigrationGraph,
 } from './serialize';
 
-/** Load the project's migration graph, or start a fresh Android→Harmony one. */
-function loadOrInit(outPath: string, root: string, packageName: string): MigrationGraph {
-  return (
-    readMigrationGraph(outPath) ??
-    emptyMigrationGraph({ platform: 'android', app: { name: path.basename(root), packageName } })
+/**
+ * Carry the target-side translation overlay from a prior graph onto a freshly
+ * rebuilt structural graph: the HarmonyOS nodes + their `maps_to` edges (the
+ * verify/target layer) and the T3 publicInterface baselines `migrate plan`
+ * persisted on each ArchModule (plan output the structural rebuild can't
+ * recompute). Everything ELSE about the android structure is dropped on purpose
+ * — that is what makes a rebuild idempotent instead of accumulating orphan nodes
+ * from a previous (e.g. older-analyzer) run. No-op when there is no prior graph.
+ */
+export function preserveTranslationOverlay(fresh: MigrationGraph, prior: MigrationGraph | null): void {
+  if (!prior) return;
+  const harmonyNodes = prior.nodes.filter((n) => n.platform === 'harmony');
+  const mapsTo = prior.edges.filter((e) => e.kind === 'maps_to');
+  mergeInto(fresh, { nodes: harmonyNodes, edges: mapsTo });
+
+  const baselineById = new Map(
+    prior.nodes
+      .filter((n) => n.kind === 'ArchModule' && Array.isArray(n.attrs?.publicInterface))
+      .map((n) => [n.id, n.attrs!.publicInterface])
   );
+  const withBaseline = fresh.nodes
+    .filter((n) => n.kind === 'ArchModule' && baselineById.has(n.id))
+    .map((n) => ({ ...n, attrs: { ...n.attrs, publicInterface: baselineById.get(n.id)! } }));
+  mergeInto(fresh, { nodes: withBaseline });
 }
 
 async function cmdIndex(pathArg: string): Promise<void> {
@@ -94,9 +112,23 @@ function cmdModules(pathArg: string, options: { out?: string }): void {
   const reader = CodeSymbolGraph.open(root);
   try {
     const result = buildModuleDependencyGraph(root, reader);
-    const graph = loadOrInit(outPath, root, result.packageName ?? '');
+    // `modules` is the pipeline root, so it REBUILDS the android structural layer
+    // from scratch rather than merging onto the prior graph. Merging accumulated
+    // orphan nodes: a re-run (e.g. after an analyzer upgrade) left behind Feature/
+    // Screen nodes the new run no longer produces. Starting fresh + preserving
+    // only the translation overlay makes the whole pipeline idempotent.
+    const prior = readMigrationGraph(outPath);
+    const graph = emptyMigrationGraph(
+      prior?.source ?? {
+        platform: 'android',
+        app: { name: path.basename(root), packageName: result.packageName ?? '' },
+      },
+      prior?.target.platform ?? 'harmony'
+    );
     if (result.packageName) graph.source.app.packageName = result.packageName;
     mergeInto(graph, { nodes: result.nodes, edges: result.edges, warnings: result.warnings });
+    if (prior?.order) graph.order = prior.order; // carried; `migrate order` refreshes it
+    preserveTranslationOverlay(graph, prior);
     writeMigrationGraph(outPath, graph);
 
     const { stats } = result;
@@ -214,6 +246,9 @@ function cmdSemantics(pathArg: string, options: { out?: string }): void {
   try {
     const result = buildSemantics(reader, root, archModules, nodeToModuleId(archModules, reader));
     mergeInto(graph, { nodes: result.nodes, edges: result.edges, warnings: result.warnings });
+    // S4 blind-spot framework names are graph top-level (not node/edge state), so
+    // they don't flow through mergeInto — set them straight from the semantics run.
+    graph.navFrameworks = result.navFrameworks;
     writeMigrationGraph(outPath, graph);
 
     const s = result.stats;
@@ -596,6 +631,7 @@ function rebuildStructuralGraph(
   graph.nodes = app.nodes;
   graph.edges = app.edges;
   graph.coverageWarnings = app.coverageWarnings;
+  graph.navFrameworks = app.navFrameworks;
   return graph;
 }
 
@@ -627,19 +663,9 @@ async function cmdSync(pathArg: string, options: { out?: string }): Promise<void
       const modules = after.nodes.filter((n) => n.kind === 'ArchModule');
       after.order = computeMigrationOrder(modules, after.edges).order;
     }
-    const harmonyNodes = before.nodes.filter((n) => n.platform === 'harmony');
-    const mapsTo = before.edges.filter((e) => e.kind === 'maps_to');
-    mergeInto(after, { nodes: harmonyNodes, edges: mapsTo });
-
-    const baselineById = new Map(
-      before.nodes
-        .filter((n) => n.kind === 'ArchModule' && Array.isArray(n.attrs?.publicInterface))
-        .map((n) => [n.id, n.attrs!.publicInterface])
-    );
-    const withBaseline = after.nodes
-      .filter((n) => n.kind === 'ArchModule' && baselineById.has(n.id))
-      .map((n) => ({ ...n, attrs: { ...n.attrs, publicInterface: baselineById.get(n.id)! } }));
-    mergeInto(after, { nodes: withBaseline });
+    // Carry the target-side translation overlay + plan baselines (same as the
+    // `modules` rebuild); order is recomputed above, not carried.
+    preserveTranslationOverlay(after, before);
 
     const diff = diffMigrationGraphs(before, after);
     const orderDiff = diffOrders(before.order, after.order);
@@ -660,7 +686,7 @@ async function cmdSync(pathArg: string, options: { out?: string }): Promise<void
   }
 }
 
-interface OrderDiff {
+export interface OrderDiff {
   unchanged: boolean;
   /** Labels of units present only in the recomputed order. */
   unitsAdded: string[];
@@ -670,8 +696,8 @@ interface OrderDiff {
   reordered: boolean;
 }
 
-/** Delta between the persisted topo order and the freshly recomputed one. */
-function diffOrders(
+/** Delta between the persisted topo order and the freshly recomputed one (B5). */
+export function diffOrders(
   before: MigrationOrder | undefined,
   after: MigrationOrder | undefined
 ): OrderDiff | null {

@@ -91,6 +91,7 @@ function stagedPipeline(root: string, reader: CodeSymbolGraph): MigrationGraph {
 
   const semantics = buildSemantics(reader, root, archModules, nodeToModuleId(archModules, reader));
   mergeInto(graph, { nodes: semantics.nodes, edges: semantics.edges, warnings: semantics.warnings });
+  graph.navFrameworks = semantics.navFrameworks; // mirror cmdSemantics (P0-3)
   return graph;
 }
 
@@ -132,6 +133,8 @@ describe('appgraph build ⇄ migrate pipeline parity', () => {
       expect(canonicalJson(app.nodes)).toEqual(canonicalJson(migration.nodes));
       expect(canonicalJson(app.edges)).toEqual(canonicalJson(migration.edges));
       expect(app.app.packageName).toEqual(migration.source.app.packageName);
+      // Top-level nav-framework blind spots stay in parity too (P0-3).
+      expect(app.navFrameworks).toEqual(migration.navFrameworks);
     } finally {
       reader.close();
     }

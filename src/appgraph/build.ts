@@ -70,6 +70,7 @@ export function buildAppGraph(
     nodes: [],
     edges: [],
     coverageWarnings: [],
+    navFrameworks: [],
   };
 
   // M1 · ArchModule + depends_on (declared ∪ lifted).
@@ -99,6 +100,7 @@ export function buildAppGraph(
     edges: semantics.edges,
     warnings: semantics.warnings,
   });
+  graph.navFrameworks = semantics.navFrameworks;
 
   return graph;
 }

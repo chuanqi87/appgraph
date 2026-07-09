@@ -21,6 +21,8 @@ import * as path from 'path';
 import { Node } from '../../src/types';
 import { parseGradleModule, buildModuleGraph } from '../../src/appgraph/extractors/android/gradle';
 import { computeMigrationOrder } from '../../src/migration/order/topo';
+import { diffOrders, preserveTranslationOverlay } from '../../src/migration/cli';
+import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
 import { extractPublicInterface } from '../../src/migration/plan/context';
 import { isTestPath } from '../../src/appgraph/detect/shared';
 import { projectFileCoupling } from '../../src/appgraph/community/project';
@@ -185,5 +187,147 @@ describe('B4 · lifted coupling over shipped code only + reverse-suspect', () =>
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// B5 · sync recomputes the migration order and reports the delta. cmdSync's
+// disk I/O is a thin shell over `computeMigrationOrder` + `diffOrders`; this pins
+// that composition (a structural change → a detected, correctly-shaped delta).
+describe('B5 · order recompute + diff', () => {
+  const mod = (name: string): AppNode => ({
+    id: makeNodeId('android', 'ArchModule', `module:${name}`),
+    kind: 'ArchModule',
+    matchKey: `module:${name}`,
+    name: `:${name}`,
+    platform: 'android',
+    provenance: 'manifest',
+    fidelity: 'source-project',
+    confidence: 1,
+    attrs: { dir: name },
+  });
+  const dep = (from: AppNode, to: AppNode): AppEdge => ({
+    id: makeEdgeId('depends_on', from.id, to.id),
+    kind: 'depends_on',
+    from: from.id,
+    to: to.id,
+    provenance: 'manifest',
+    confidence: 1,
+  });
+  const core = mod('core');
+  const feat = mod('feature');
+  const app = mod('app');
+  const orderOf = (modules: AppNode[], edges: AppEdge[]) =>
+    computeMigrationOrder(modules, edges).order;
+
+  it('reports unchanged when the structure is identical', () => {
+    const before = orderOf([core, feat, app], [dep(app, feat), dep(feat, core)]);
+    const after = orderOf([core, feat, app], [dep(app, feat), dep(feat, core)]);
+    expect(diffOrders(before, after)!.unchanged).toBe(true);
+  });
+
+  it('detects an added module', () => {
+    const before = orderOf([core, app], [dep(app, core)]);
+    const after = orderOf([core, feat, app], [dep(app, feat), dep(feat, core)]);
+    const d = diffOrders(before, after)!;
+    expect(d.unchanged).toBe(false);
+    expect(d.unitsAdded).toContain(':feature');
+    expect(d.unitsRemoved).toEqual([]);
+  });
+
+  it('detects a removed module', () => {
+    const before = orderOf([core, feat, app], [dep(app, feat), dep(feat, core)]);
+    const after = orderOf([core, app], [dep(app, core)]);
+    const d = diffOrders(before, after)!;
+    expect(d.unitsRemoved).toContain(':feature');
+  });
+
+  it('detects a reordering of shared units when a dependency flips', () => {
+    // core→app then app→core: the leaf swaps, so the shared units reorder.
+    const before = orderOf([core, app], [dep(app, core)]); // core(0), app(1)
+    const after = orderOf([core, app], [dep(core, app)]); // app(0), core(1)
+    const d = diffOrders(before, after)!;
+    expect(d.reordered).toBe(true);
+    expect(d.unchanged).toBe(false);
+  });
+
+  it('returns null when either order is missing (nothing to diff)', () => {
+    expect(diffOrders(undefined, orderOf([core], []))).toBeNull();
+    expect(diffOrders(orderOf([core], []), undefined)).toBeNull();
+  });
+});
+
+// Orphan-accumulation fix: a structural rebuild starts from a FRESH graph and
+// only carries the translation overlay forward, so stale nodes a prior run
+// produced (but the new run doesn't) never linger. `preserveTranslationOverlay`
+// is the carry-forward step; this pins that it moves ONLY the overlay.
+describe('structural rebuild drops orphans, keeps the translation overlay', () => {
+  const feature = (sig: string): AppNode => ({
+    id: makeNodeId('android', 'Feature', `feature:${sig}`),
+    kind: 'Feature',
+    matchKey: `feature:${sig}`,
+    name: sig,
+    platform: 'android',
+    subtype: 'cross-module',
+    provenance: 'lifted',
+    fidelity: 'source-project',
+    confidence: 0.4,
+    attrs: { sig },
+  });
+  const archModule = (name: string, attrs: Record<string, unknown> = {}): AppNode => ({
+    id: makeNodeId('android', 'ArchModule', `module:${name}`),
+    kind: 'ArchModule',
+    matchKey: `module:${name}`,
+    name: `:${name}`,
+    platform: 'android',
+    provenance: 'manifest',
+    fidelity: 'source-project',
+    confidence: 1,
+    attrs: { dir: name, ...attrs },
+  });
+  const harmonyNode = (name: string): AppNode => ({
+    id: makeNodeId('harmony', 'ArchModule', `module:${name}`),
+    kind: 'ArchModule',
+    matchKey: `module:${name}`,
+    name,
+    platform: 'harmony',
+    provenance: 'manifest',
+    fidelity: 'source-project',
+    confidence: 1,
+  });
+
+  it('carries harmony nodes + maps_to + publicInterface baselines, drops stale android nodes', () => {
+    const core = archModule('core', { publicInterface: ['CoreApi', 'CoreClient'] });
+    const harmony = harmonyNode('coreEntry');
+    const prior = emptyMigrationGraph({ platform: 'android', app: { name: 't', packageName: 'c' } });
+    mergeInto(prior, {
+      nodes: [core, feature('staleFeat'), harmony],
+      edges: [
+        { id: makeEdgeId('maps_to', core.id, harmony.id), kind: 'maps_to', from: core.id, to: harmony.id, provenance: 'manifest', confidence: 1 },
+      ],
+    });
+
+    // Fresh rebuild: the module is back (no baseline attr yet), but the stale
+    // Feature the prior run produced is NOT re-emitted.
+    const fresh = emptyMigrationGraph({ platform: 'android', app: { name: 't', packageName: 'c' } });
+    mergeInto(fresh, { nodes: [archModule('core')] });
+
+    preserveTranslationOverlay(fresh, prior);
+
+    // Stale android Feature is gone (orphan eliminated).
+    expect(fresh.nodes.some((n) => n.kind === 'Feature')).toBe(false);
+    // Harmony node + maps_to edge carried forward.
+    expect(fresh.nodes.some((n) => n.platform === 'harmony')).toBe(true);
+    expect(fresh.edges.some((e) => e.kind === 'maps_to')).toBe(true);
+    // publicInterface baseline re-attached to the fresh ArchModule.
+    const freshCore = fresh.nodes.find((n) => n.id === core.id)!;
+    expect(freshCore.attrs?.publicInterface).toEqual(['CoreApi', 'CoreClient']);
+  });
+
+  it('is a no-op when there is no prior graph', () => {
+    const fresh = emptyMigrationGraph({ platform: 'android', app: { name: 't', packageName: 'c' } });
+    mergeInto(fresh, { nodes: [archModule('core')] });
+    const before = JSON.stringify(fresh);
+    preserveTranslationOverlay(fresh, null);
+    expect(JSON.stringify(fresh)).toBe(before);
   });
 });

@@ -39,6 +39,8 @@ export interface BriefUnit {
 
 /** How many split-unit member files to list verbatim before eliding. */
 const MAX_LISTED_FILES = 40;
+/** How many whole-module files to list verbatim (module/merged units) before eliding. */
+const MAX_LISTED_MODULE_FILES = 200;
 
 /** `12345` → `12.3k`, keeping the rough estimate readable. */
 function formatTokens(n: number): string {
@@ -105,7 +107,9 @@ export function renderUnitBrief(
     lines.push('');
   }
 
-  for (const m of modules) renderModule(lines, m);
+  // A split unit already lists its exact slice files in the header above; a
+  // module/merged unit migrates the whole module, so it gets the full manifest.
+  for (const m of modules) renderModule(lines, m, unit.kind !== 'split');
   renderMcpGuide(lines, unit, modules);
   renderAcceptance(lines, modules, unit, contract);
 
@@ -134,7 +138,7 @@ function renderMcpGuide(lines: string[], unit: BriefUnit, modules: ModuleBrief[]
   lines.push('');
 }
 
-function renderModule(lines: string[], m: ModuleBrief): void {
+function renderModule(lines: string[], m: ModuleBrief, showFiles: boolean): void {
   lines.push(`## 模块 ${m.moduleName}`);
   const meta = [
     m.role ? `角色 ${m.role}` : '',
@@ -151,6 +155,7 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   }
   lines.push('');
 
+  if (showFiles) renderModuleFiles(lines, m);
   renderFeatureSections(lines, m.featureSections);
   renderScreens(lines, m.screens);
   renderCustomViews(lines, m.customViews);
@@ -164,6 +169,22 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   renderInterface(lines, m);
   renderTestContract(lines, m);
   renderDependencies(lines, m);
+}
+
+/**
+ * The module's full file manifest (P1-3). The functional-cluster grouping below
+ * only covers files that fell into a subdivision/cross-module Feature; this is
+ * the complete list so no source file is invisible to the conversion agent.
+ */
+function renderModuleFiles(lines: string[], m: ModuleBrief): void {
+  // Absent on a pre-P1-3 plan.json (additive field).
+  if (!m.files || m.files.length === 0) return;
+  lines.push(`### 文件清单 [静态](共 ${m.files.length} 个,本单元迁移整个模块)`);
+  for (const f of m.files.slice(0, MAX_LISTED_MODULE_FILES)) lines.push(`- ${f}`);
+  if (m.files.length > MAX_LISTED_MODULE_FILES) {
+    lines.push(`- …等共 ${m.files.length} 个文件(全清单见 plan.json)`);
+  }
+  lines.push('');
 }
 
 function renderFeatureSections(lines: string[], sections: FeatureSectionBrief[] | undefined): void {

@@ -35,6 +35,9 @@ export interface SemanticsResult {
   nodes: AppNode[];
   edges: AppEdge[];
   warnings: CoverageWarning[];
+  /** Third-party navigation/UI framework names fingerprinted (S4) — declared
+   *  blind spots the caller records at graph top level. */
+  navFrameworks: string[];
   /** Role map (by qualifiedName) for the migrate/context assembler (C1). */
   roles: RoleResult;
   stats: {
@@ -142,32 +145,17 @@ export function buildSemantics(
   // warning (an under-detected screen/nav graph must never read as complete).
   const navFrameworks = detectNavFrameworks(nodes);
 
-  // Anti-silence guard: a screenful app with an empty/near-empty navigation graph
-  // is a coverage failure the agent must SEE, not a plausible-looking "no nav".
-  // (The regression that motivated this: a `.codegraph` indexed by a pre-synthesizer
-  // build has zero compose-route/android-intent edges, and the lift silently
-  // produced navigates_to=0 while everything else looked healthy.)
-  const navWarnings: CoverageWarning[] = [];
   const screenCount = navTargets.filter((n) => n.kind === 'Screen').length;
   const totalNavEdges = navLift.stats.navigatesTo + navXml.stats.navEdges;
-  if (screenCount >= 5 && totalNavEdges === 0) {
-    const synthCount = reader.getSynthesizedEdges(['compose-route', 'android-intent']).length;
-    navWarnings.push({
-      message:
-        synthCount === 0
-          ? `识别出 ${screenCount} 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边——` +
-            `导航图为空，不可依赖。若 .codegraph 索引由旧版本构建，请用当前版本重跑 codegraph index；` +
-            `若索引已是最新，则该应用的导航机制（如 Fragment 事务/自研路由）未被合成器覆盖`
-          : `识别出 ${screenCount} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
-            `导航图为空，页面迁移关系不可依赖`,
-    });
-  } else if (screenCount >= 20 && totalNavEdges < screenCount * 0.05) {
-    navWarnings.push({
-      message:
-        `识别出 ${screenCount} 个 Screen 但只有 ${totalNavEdges} 条 navigates_to——` +
-        `导航覆盖异常稀疏（该应用的导航机制可能未被合成器覆盖，页面迁移关系不完整）`,
-    });
-  }
+  const navWarnings = navCoverageWarnings(
+    {
+      screenCount,
+      totalNavEdges,
+      activityScreens: structure.stats.activityScreens,
+      appEntries: structure.stats.appEntries,
+    },
+    () => reader.getSynthesizedEdges(['compose-route', 'android-intent']).length
+  );
 
   const enrichedModules = archModules.map((m) =>
     enrichModule(m, {
@@ -216,6 +204,7 @@ export function buildSemantics(
     nodes: outNodes,
     edges: outEdges,
     warnings,
+    navFrameworks: navFrameworks.frameworks,
     roles,
     stats: {
       rolesTagged: roles.byNodeId.size,
@@ -246,6 +235,65 @@ export function buildSemantics(
       warnings: warnings.length,
     },
   };
+}
+
+/**
+ * Nav-coverage anti-silence guards (P0-3). Pure over the counts so it is unit-
+ * testable; the caller supplies `getSynthCount` lazily (only the empty-nav
+ * branch reads it). An empty/sparse navigation graph — or manifest Activities
+ * with no richer screen recovered at all — is a coverage FAILURE the agent must
+ * SEE, never a plausible-looking "no navigation".
+ *
+ * (The empty-nav regression that motivated the first guard: a `.codegraph`
+ * indexed by a pre-synthesizer build has zero compose-route/android-intent
+ * edges, and the lift silently produced navigates_to=0 while everything else
+ * looked healthy. The Screen under-detection guard treats CatchUp's
+ * 3-screens-0-warnings gap: S4's fingerprint catches the known-framework case,
+ * this catches the framework-unknown case.)
+ */
+export function navCoverageWarnings(
+  counts: { screenCount: number; totalNavEdges: number; activityScreens: number; appEntries: number },
+  getSynthCount: () => number
+): CoverageWarning[] {
+  const { screenCount, totalNavEdges, activityScreens, appEntries } = counts;
+  const out: CoverageWarning[] = [];
+
+  if (screenCount >= 5 && totalNavEdges === 0) {
+    const synthCount = getSynthCount();
+    out.push({
+      message:
+        synthCount === 0
+          ? `识别出 ${screenCount} 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边——` +
+            `导航图为空，不可依赖。若 .codegraph 索引由旧版本构建，请用当前版本重跑 codegraph index；` +
+            `若索引已是最新，则该应用的导航机制（如 Fragment 事务/自研路由）未被合成器覆盖`
+          : `识别出 ${screenCount} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
+            `导航图为空，页面迁移关系不可依赖`,
+    });
+  } else if (screenCount >= 20 && totalNavEdges < screenCount * 0.05) {
+    out.push({
+      message:
+        `识别出 ${screenCount} 个 Screen 但只有 ${totalNavEdges} 条 navigates_to——` +
+        `导航覆盖异常稀疏（该应用的导航机制可能未被合成器覆盖，页面迁移关系不完整）`,
+    });
+  }
+
+  // Screen under-detection: a SINGLE-Activity app (one manifest Activity host)
+  // with launcher entries but NO richer screen (Compose / xml-layout / Fragment)
+  // recovered at all — modern single-Activity apps are Compose-nav or
+  // Fragment-nav, so finding neither means the real screens are built by a
+  // mechanism the passes don't see. Gated on activityScreens===1 on purpose: a
+  // multi-Activity View app (each Activity IS a screen) is legitimately complete
+  // even with richScreens===0, so it must NOT warn ("silent beats wrong").
+  const richScreens = screenCount - activityScreens;
+  if (appEntries > 0 && activityScreens === 1 && richScreens === 0) {
+    out.push({
+      message:
+        `工程是单 Activity 结构（1 个宿主 Activity、${appEntries} 个启动入口），` +
+        `但除该 Activity 外未识别出任何 Compose/布局/Fragment 屏幕——` +
+        `UI 屏幕很可能经未覆盖的机制（第三方路由/自研框架）构建，屏幕清单不完整，勿当作完整事实`,
+    });
+  }
+  return out;
 }
 
 /** The per-module semantic facts the orchestrator folds into an ArchModule's attrs. */

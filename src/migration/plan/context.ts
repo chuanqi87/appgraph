@@ -139,6 +139,13 @@ export interface ModuleBrief {
   necessity?: string;
   /** Code symbols assigned to this module (size signal for unit planning). */
   symbolCount?: number;
+  /**
+   * The module's source files (project-relative, sorted). For a split unit this
+   * is the slice's files; for a module/merged unit it is the whole module — the
+   * full file manifest the conversion agent needs (P1-3), not just the files
+   * that happened to surface under a Feature section.
+   */
+  files: string[];
   publicInterface: InterfaceMember[];
   capabilities: CapabilityUse[];
   dependencies: DependencyBrief[];
@@ -236,6 +243,7 @@ export function assembleModuleBrief(
     necessity: typeof module?.attrs?.necessity === 'string' ? module.attrs.necessity : undefined,
     symbolCount:
       typeof module?.attrs?.symbolCount === 'number' ? module.attrs.symbolCount : undefined,
+    files: [...new Set(nodes.map((n) => n.filePath))].sort(),
     publicInterface: extractPublicInterface(nodes),
     capabilities: extractCapabilities(nodes),
     dependencies: extractDependencies(moduleId, input),

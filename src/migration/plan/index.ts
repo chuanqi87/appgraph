@@ -12,7 +12,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppNode, slug } from '../../appgraph/schema';
+import { AppNode, CoverageWarning, slug } from '../../appgraph/schema';
 import { Node } from '../../types';
 import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
 import { isAndroidViewSuper } from '../../appgraph/detect/roles';
@@ -103,6 +103,14 @@ export interface MigrationPlan {
   units: UnitPlan[];
   /** Cross-unit global assembly work order (NOT a units[] entry). */
   appScaffold: { briefFile: string; contractFile: string };
+  /**
+   * Places extraction could not fully recover the truth — surfaced so the
+   * conversion agent never mistakes silent incompleteness for completeness
+   * (rendered as the app-scaffold "已知盲区" section). Copied from the graph.
+   */
+  coverageWarnings: CoverageWarning[];
+  /** Third-party navigation/UI frameworks fingerprinted (S4 blind spots). */
+  navFrameworks: string[];
 }
 
 export interface PlanResult {
@@ -189,6 +197,8 @@ export function buildMigrationPlan(
       briefFile: 'units/00-app-scaffold.md',
       contractFile: 'contracts/00-app-scaffold.json',
     },
+    coverageWarnings: graph.coverageWarnings ?? [],
+    navFrameworks: graph.navFrameworks ?? [],
   };
   // App-scaffold: cross-unit global assembly (route table + module.json5 gates).
   contracts.set(APP_SCAFFOLD_UNIT_ID, buildAppScaffoldContract(plan));

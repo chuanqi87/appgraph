@@ -213,6 +213,7 @@ export function detectAndroidStructure(
     ),
     edges: [],
     coverageWarnings: [],
+    navFrameworks: [],
   };
   const lift = liftNavigation(shell, projectRoot);
   for (const node of lift.nodes) {

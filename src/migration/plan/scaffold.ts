@@ -84,6 +84,8 @@ export function renderAppScaffoldBrief(plan: MigrationPlan): string {
   lines.push('> 再按单元顺序逐个迁移;本工单的契约见 `plan/contracts/00-app-scaffold.json`。');
   lines.push('');
 
+  renderBlindSpots(lines, plan);
+
   lines.push('## 全局路由表 [静态](所有屏幕 + 导航 + 迁移单元归属)');
   if (a.routes.length === 0) {
     lines.push('_(无屏幕)_');
@@ -119,6 +121,33 @@ export function renderAppScaffoldBrief(plan: MigrationPlan): string {
   lines.push('迁移完成后可用 `migrate verify <源> --target <目标> --unit scaffold` 核对 app 级契约。');
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * Known blind spots — the coverage warnings + third-party nav frameworks the
+ * extraction could not fully recover. Without this section the warnings sit in
+ * `migration-graph.json` where no consuming agent ever sees them, so silent
+ * incompleteness reads as completeness (the exact failure P0-3 targets). Render
+ * it FIRST so the agent treats the route table / screen list below as
+ * known-incomplete, never as ground truth.
+ */
+function renderBlindSpots(lines: string[], plan: MigrationPlan): void {
+  const warnings = plan.coverageWarnings ?? [];
+  const frameworks = plan.navFrameworks ?? [];
+  if (warnings.length === 0 && frameworks.length === 0) return;
+
+  lines.push('## ⚠ 已知盲区(覆盖告警 —— 请勿把下方事实当作完整无遗漏)');
+  if (frameworks.length > 0) {
+    lines.push(
+      `- 第三方导航/UI 框架:${frameworks.join('、')} —— 屏幕识别与页面跳转图不覆盖这些框架,` +
+        `全局路由表很可能缺失大量页面与跳转,迁移时须以源码为准补全。`
+    );
+  }
+  for (const w of warnings) {
+    const ref = w.ref?.file ? ` (${w.ref.file}${w.ref.symbol ? `:${w.ref.symbol}` : ''})` : '';
+    lines.push(`- ${w.message}${ref}`);
+  }
+  lines.push('');
 }
 
 /** Build the app-scaffold contract (app-level invariants only). */

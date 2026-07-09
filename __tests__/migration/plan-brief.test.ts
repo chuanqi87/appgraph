@@ -23,6 +23,7 @@ function brief(over: Partial<ModuleBrief> = {}): ModuleBrief {
     moduleName: ':core:database',
     role: 'core',
     layer: 'data',
+    files: [],
     publicInterface: [],
     capabilities: [],
     dependencies: [],
@@ -214,6 +215,32 @@ describe('P · brief rendering', () => {
     expect(md).toContain('依赖环(SCC)');
     expect(renderUnitBrief(u, modules, 5)).toBe(md);
   });
+
+  it('lists the whole-module file manifest on a module/merged unit (P1-3)', () => {
+    const files = ['core/database/src/main/kotlin/A.kt', 'core/database/src/main/kotlin/B.kt'];
+    const md = renderUnitBrief(unit({ kind: 'module' }), [brief({ files })], 5);
+    expect(md).toContain('文件清单 [静态](共 2 个,本单元迁移整个模块)');
+    for (const f of files) expect(md).toContain(`- ${f}`);
+  });
+
+  it('elides a huge file manifest with a count (truncates at 200)', () => {
+    const files = Array.from({ length: 250 }, (_, i) => `m/src/File${String(i).padStart(3, '0')}.kt`);
+    const md = renderUnitBrief(unit({ kind: 'module' }), [brief({ files })], 5);
+    expect(md).toContain('文件清单 [静态](共 250 个');
+    expect(md).toContain('…等共 250 个文件');
+    expect(md).toContain('- m/src/File000.kt');
+    expect(md).not.toContain('- m/src/File249.kt'); // beyond the 200 cap
+  });
+
+  it('does NOT repeat the manifest on a split unit (its slice is in the header)', () => {
+    const md = renderUnitBrief(
+      unit({ kind: 'split', featureSig: 'sigA', files: ['m/src/Slice.kt'] }),
+      [brief({ files: ['m/src/Slice.kt'] })],
+      5
+    );
+    expect(md).not.toContain('文件清单 [静态]');
+    expect(md).toContain('只迁移下列 1 个文件'); // the split header, not the module manifest
+  });
 });
 
 describe('P · assembly from the enriched graph', () => {
@@ -230,6 +257,11 @@ describe('P · assembly from the enriched graph', () => {
     const b = assembleModuleBrief(id('ArchModule', 'module:coredatabase'), input);
 
     expect(b.moduleName).toBe(':core:database');
+    // Whole-module file manifest (P1-3), deduped + sorted, from the module's nodes.
+    expect(b.files).toEqual([
+      'core/database/src/main/kotlin/Internal.kt',
+      'core/database/src/main/kotlin/TopicDao.kt',
+    ]);
     // Public interface: private member excluded, file anchor kept.
     expect(b.publicInterface.map((m) => m.name)).toEqual(['TopicDao']);
     expect(b.publicInterface[0]!.file).toContain('TopicDao.kt');

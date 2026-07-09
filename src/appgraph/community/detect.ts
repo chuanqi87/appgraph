@@ -79,23 +79,9 @@ export function detectCommunities(graph: Graph, opts: DetectOptions = {}): Commu
   }
   communities = second;
 
-  // P1-4: break up cross-module grab-bags the size/cohesion passes miss — a
-  // community spanning >6 modules with cohesion <0.15 is unrelated subsystems
-  // glued by a hub, not one feature. Only re-split when the split actually
-  // separates it into >1 part (otherwise the cluster is genuinely coupled).
+  // P1-4: break up cross-module grab-bags the size/cohesion passes miss.
   if (opts.moduleOfFile) {
-    const spanOf = (members: string[]): number =>
-      new Set(members.map(opts.moduleOfFile!).filter((m): m is string => m !== undefined)).size;
-    const third: string[][] = [];
-    for (const members of communities) {
-      if (spanOf(members) > MODULE_SPAN_SPLIT && cohesion(graph, members) < MODULE_SPAN_COHESION) {
-        const splits = splitCommunity(graph, members);
-        third.push(...(splits.length > 1 ? splits : [members]));
-      } else {
-        third.push(members);
-      }
-    }
-    communities = third;
+    communities = resplitCrossModuleGrabBags(communities, graph, opts.moduleOfFile);
   }
 
   // Total order: size desc, then lexical by sorted members → stable ids.
@@ -113,6 +99,35 @@ export function detectCommunities(graph: Graph, opts: DetectOptions = {}): Commu
       sig: memberSig(sorted),
     };
   });
+}
+
+/**
+ * P1-4 · break up cross-module grab-bags the size/cohesion passes miss — a
+ * community spanning >6 modules with cohesion <0.15 is unrelated subsystems
+ * glued by a hub, not one feature. Only keep a re-split when it actually
+ * separates the cluster into >1 part (otherwise it is genuinely coupled).
+ *
+ * Exported for testing: the first Louvain pass never emits such a community on a
+ * synthetic graph — a splittable cluster is split by that first pass too — so
+ * this stage can only be exercised directly, with a pre-formed community.
+ */
+export function resplitCrossModuleGrabBags(
+  communities: string[][],
+  graph: Graph,
+  moduleOfFile: (file: string) => string | undefined
+): string[][] {
+  const spanOf = (members: string[]): number =>
+    new Set(members.map(moduleOfFile).filter((m): m is string => m !== undefined)).size;
+  const out: string[][] = [];
+  for (const members of communities) {
+    if (spanOf(members) > MODULE_SPAN_SPLIT && cohesion(graph, members) < MODULE_SPAN_COHESION) {
+      const splits = splitCommunity(graph, members);
+      out.push(...(splits.length > 1 ? splits : [members]));
+    } else {
+      out.push(members);
+    }
+  }
+  return out;
 }
 
 /** Run seeded Louvain and group node → cid into cid → members. */

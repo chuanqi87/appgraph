@@ -124,10 +124,10 @@ export function buildCommunityOverlay(
       aligned++;
     }
 
-    // A cross-module cluster that STILL sprawls wide with weak cohesion after
-    // the P1-4 re-split is a low-trust grouping — flag it and drop a confidence
-    // tier so consumers can down-weight it (the graph keeps it; nothing is lost).
-    const weak = role === 'cross-module' && (moduleSpan.length > WEAK_MODULE_SPAN || c.cohesion < WEAK_COHESION);
+    // A cross-module cluster that STILL sprawls wide AND stays thin after the
+    // P1-4 re-split is a low-trust grab-bag — flag it and drop a confidence tier
+    // so consumers can down-weight it (the graph keeps it; nothing is lost).
+    const weak = isWeakGrabBag(role, moduleSpan.length, c.cohesion);
     const confidence = weak
       ? Math.max(0.2, cohesionConfidence(c.cohesion) - 0.2)
       : cohesionConfidence(c.cohesion);
@@ -216,11 +216,22 @@ function firstDirForModule(moduleId: string, moduleDirToId: Map<string, string>)
   return undefined;
 }
 
-// A cross-module Feature exceeding either bound is a low-trust grab-bag (marked
-// attrs.weak). Matched to the re-split window in detect.ts — anything above it
-// there was already attempted and could not be separated.
+// A cross-module Feature exceeding BOTH bounds is a low-trust grab-bag (marked
+// attrs.weak) — identical to the re-split window in detect.ts, so a flagged
+// Feature is exactly one the re-split attempted but could not separate.
 const WEAK_MODULE_SPAN = 6;
 const WEAK_COHESION = 0.15;
+
+/**
+ * P1-4 · a cross-module cluster that stays BOTH wide (>6 modules) AND thin
+ * (cohesion <0.15) after the re-split is a low-trust grab-bag. The AND mirrors
+ * the re-split window in detect.ts, so a flagged Feature is exactly one the
+ * re-split tried but could not separate — not merely a wide-but-cohesive
+ * grouping (that is a genuine cross-cutting concern, kept at full confidence).
+ */
+export function isWeakGrabBag(role: string, moduleSpan: number, cohesion: number): boolean {
+  return role === 'cross-module' && moduleSpan > WEAK_MODULE_SPAN && cohesion < WEAK_COHESION;
+}
 
 /** Confidence tiers from a community's intra-edge density. */
 function cohesionConfidence(cohesion: number): number {

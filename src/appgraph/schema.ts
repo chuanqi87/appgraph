@@ -116,6 +116,13 @@ export interface AppGraph {
   nodes: AppNode[];
   edges: AppEdge[];
   coverageWarnings: CoverageWarning[];
+  /**
+   * Third-party navigation/UI frameworks fingerprinted from imports (S4). Each
+   * is a DECLARED blind spot: screen/nav extraction does not cover it, so the
+   * screen list and navigation graph are known-incomplete. Names only — the
+   * matching human-readable caveats are in `coverageWarnings`.
+   */
+  navFrameworks: string[];
 }
 
 // =============================================================================

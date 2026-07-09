@@ -168,7 +168,7 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
   {
     name: 'app_modules',
     description:
-      '模块依赖图全景:每个 Gradle 模块的角色/层/必要性(产品|开发支撑)/符号量,及其声明依赖邻接表(自底向上)。不需精确模块名,是 migrate_module_facts 的入口 —— 先用它看全局,再对具体模块查 facts。',
+      '模块依赖图全景:每个 Gradle 模块的角色/层/必要性(产品|开发支撑)/符号量,及其声明依赖邻接表(已跑 migrate order 时按自底向上排序,否则按名称)。不需精确模块名,是 migrate_module_facts 的入口 —— 先用它看全局,再对具体模块查 facts。',
     inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
   },
   {
@@ -299,6 +299,14 @@ export class MigrateToolHandler {
     if (devOnly.length > 0) {
       lines.push(
         `其中 ${devOnly.length} 个是开发支撑单元(基准测试/测试工具/lint,标 [开发支撑]),不进产品包,已在同波次内沉到产品单元之后 —— 可最后迁移或按需跳过。`
+      );
+    }
+    const blindSpots = (plan.coverageWarnings ?? []).length;
+    const frameworks = plan.navFrameworks ?? [];
+    if (blindSpots > 0 || frameworks.length > 0) {
+      const fw = frameworks.length > 0 ? `第三方导航框架 ${frameworks.join('、')};` : '';
+      lines.push(
+        `⚠ 已知盲区:${fw}覆盖告警 ${blindSpots} 条 —— 屏幕/导航等事实可能不完整,详见应用装配工单 ${plan.appScaffold.briefFile}(migrate_unit {"unit":"scaffold"})。`
       );
     }
     const labels = readLabelStore(getLabelsPath(root));
@@ -707,12 +715,30 @@ export class MigrateToolHandler {
   private appModules(root: string): ToolResult {
     const graph = this.loadGraph(root);
     if (!graph) return text(PIPELINE_HINT);
+    // Bottom-up order: place each module by its migration unit's order (computed
+    // by `migrate order`), so dependencies come first — matching the header's
+    // claim. Fall back to name order (and say so) when no order has been run.
+    const orderByModuleId = new Map<string, number>();
+    for (const u of graph.order?.units ?? []) {
+      for (const mid of u.moduleIds) orderByModuleId.set(mid, u.order);
+    }
     const modules = graph.nodes
       .filter((n) => n.kind === 'ArchModule' && n.platform === 'android')
-      .sort(byName);
+      .sort((a, b) => {
+        const oa = orderByModuleId.get(a.id);
+        const ob = orderByModuleId.get(b.id);
+        if (oa !== undefined && ob !== undefined && oa !== ob) return oa - ob;
+        if (oa === undefined && ob !== undefined) return 1; // un-ordered sink to end
+        if (oa !== undefined && ob === undefined) return -1;
+        return a.name.localeCompare(b.name);
+      });
     if (modules.length === 0) {
       return text('未发现 Gradle 模块(工程可能是单模块或未跑 migrate modules)。');
     }
+    // Only claim "bottom-up" when EVERY module is placed by the order — a stale
+    // or partial order (new modules not yet synced) would sink the uncovered
+    // ones to the end, which is not a faithful bottom-up listing.
+    const ordered = modules.every((m) => orderByModuleId.has(m.id));
 
     // Declared (manifest) depends_on adjacency; test-scoped deps listed apart.
     const nameById = new Map(modules.map((m) => [m.id, m.name]));
@@ -728,7 +754,11 @@ export class MigrateToolHandler {
 
     const devOnly = modules.filter((m) => m.attrs?.necessity === 'dev-only').length;
     const lines = [`# 模块依赖图(${modules.length} 个模块${devOnly ? `,其中 ${devOnly} 个开发支撑` : ''})`];
-    lines.push('每行:模块 · 角色/层/必要性 · 符号量 → 声明依赖(自底向上,依赖排在更早迁移)');
+    lines.push(
+      ordered
+        ? '每行:模块 · 角色/层/必要性 · 符号量 → 声明依赖(按迁移顺序自底向上,依赖排在更早迁移)'
+        : '每行:模块 · 角色/层/必要性 · 符号量 → 声明依赖(按名称排序;跑 migrate order 后可按自底向上排序)'
+    );
     lines.push('');
     for (const m of modules) {
       const a = m.attrs ?? {};

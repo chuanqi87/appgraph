@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { makeEdgeId, makeNodeId } from '../../src/appgraph/schema';
 import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
+import { computeMigrationOrder } from '../../src/migration/order/topo';
 import { writeMigrationGraph, migrationGraphPath } from '../../src/migration/serialize';
 import { getMigrationDir, getPlanDir } from '../../src/migration/paths';
 import { MIGRATE_TOOLS, MigrateToolHandler, ToolResult } from '../../src/migration/mcp/tools';
@@ -423,5 +424,64 @@ describe('migrate MCP · server routing', () => {
 
     await t.emit({ jsonrpc: '2.0', id: 6, method: 'wat' });
     expect(t.errors.get(6)!.message).toContain('Method not found');
+  });
+});
+
+// =============================================================================
+// P0-3 blind spots reach the agent · P1-6 app_modules is really bottom-up
+// =============================================================================
+
+describe('blind-spot surfacing + bottom-up app_modules', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-gap-'));
+    // :app → :feature → :core, so bottom-up order is core(0), feature(1), app(2).
+    const core = node('ArchModule', 'module:core', ':core', { dir: 'core', symbolCount: 10 });
+    const feat = node('ArchModule', 'module:feature', ':feature', { dir: 'feature', symbolCount: 20 });
+    const app = node('ArchModule', 'module:app', ':app', { dir: 'app', symbolCount: 30 });
+    const graph = emptyMigrationGraph({ platform: 'android', app: { name: 't', packageName: 'c.t' } });
+    mergeInto(graph, {
+      nodes: [core, feat, app],
+      edges: [edge('depends_on', app.id, feat.id, 'manifest'), edge('depends_on', feat.id, core.id, 'manifest')],
+    });
+    graph.order = computeMigrationOrder(graph.nodes.filter((n) => n.kind === 'ArchModule'), graph.edges).order;
+    graph.coverageWarnings = [{ message: '识别出 8 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边' }];
+    graph.navFrameworks = ['Circuit'];
+    writeMigrationGraph(migrationGraphPath(root), graph);
+
+    // A minimal plan carrying the same blind spots (what buildMigrationPlan copies).
+    const planDir = getPlanDir(root);
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planDir, 'plan.json'),
+      JSON.stringify({
+        schemaVersion: 4,
+        source: graph.source,
+        target: graph.target,
+        planning: { enabled: true, minUnitSymbols: 120, maxUnitSymbols: 3000, merged: 0, split: 0 },
+        totalUnits: 1,
+        units: [{ id: 'u', order: 0, label: ':core', kind: 'module', cyclic: false, moduleIds: [core.id], symbolCount: 10, wave: 0, dependsOnUnitIds: [], briefFile: 'units/01-core.md', contractFile: 'contracts/01-core.json', modules: [] }],
+        appScaffold: { briefFile: 'units/00-app-scaffold.md', contractFile: 'contracts/00-app-scaffold.json' },
+        coverageWarnings: graph.coverageWarnings,
+        navFrameworks: graph.navFrameworks,
+      })
+    );
+  });
+
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('app_modules orders modules bottom-up (deps first) when a migration order exists', () => {
+    const out = textOf(new MigrateToolHandler(root).execute('app_modules', {}));
+    expect(out).toContain('按迁移顺序自底向上');
+    // core (leaf, order 0) must appear before app (order 2), not alphabetical.
+    expect(out.indexOf(':core')).toBeLessThan(out.indexOf(':app'));
+  });
+
+  it('migrate_order surfaces the known blind spots (frameworks + warning count)', () => {
+    const out = textOf(new MigrateToolHandler(root).execute('migrate_order', {}));
+    expect(out).toContain('已知盲区');
+    expect(out).toContain('Circuit');
+    expect(out).toContain('00-app-scaffold'); // points at the scaffold work order
   });
 });

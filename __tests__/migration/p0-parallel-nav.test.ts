@@ -26,6 +26,7 @@ import { MigrateToolHandler } from '../../src/migration/mcp/tools';
 import { getLedgerPath, getPlanDir } from '../../src/migration/paths';
 import { detectNavigationXml } from '../../src/appgraph/detect/android-navigation-xml';
 import { detectNavFrameworks } from '../../src/appgraph/detect/nav-frameworks';
+import { navCoverageWarnings } from '../../src/appgraph/detect/semantics';
 import { Node } from '../../src/types';
 
 // --- shared fixture helpers ---------------------------------------------------
@@ -433,5 +434,58 @@ describe('detectNavFrameworks', () => {
     const { frameworks, warnings } = detectNavFrameworks([importNode('androidx.navigation.NavController')]);
     expect(frameworks).toEqual([]);
     expect(warnings).toEqual([]);
+  });
+});
+
+// =============================================================================
+// 6 · nav-coverage anti-silence guards (empty / sparse / Screen under-detection)
+// =============================================================================
+
+describe('navCoverageWarnings', () => {
+  const base = { screenCount: 0, totalNavEdges: 0, activityScreens: 0, appEntries: 0 };
+  const msgs = (
+    c: Partial<typeof base>,
+    synth = 0
+  ): string[] => navCoverageWarnings({ ...base, ...c }, () => synth).map((w) => w.message);
+
+  it('empty-nav: screens but zero edges + no synth edges → re-index/uncovered guidance', () => {
+    const out = msgs({ screenCount: 8, totalNavEdges: 0 }, 0);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain('没有任何 compose-route/android-intent 合成边');
+  });
+
+  it('empty-nav with synth edges present → "none attributed" variant (reads getSynthCount)', () => {
+    const out = msgs({ screenCount: 8, totalNavEdges: 0 }, 5);
+    expect(out[0]).toContain('5 条导航合成边');
+  });
+
+  it('sparse-nav: ≥20 screens with <5% edges warns; does not fire below the floor', () => {
+    expect(msgs({ screenCount: 30, totalNavEdges: 1 })).toEqual([
+      expect.stringContaining('导航覆盖异常稀疏'),
+    ]);
+    expect(msgs({ screenCount: 8, totalNavEdges: 1 })).toEqual([]); // 5≤screens<20, has an edge
+  });
+
+  it('Screen under-detection: launcher + Activity but no richer screen → warns', () => {
+    // 1 manifest Activity == screenCount (richScreens 0), 1 launcher entry.
+    const out = msgs({ screenCount: 1, activityScreens: 1, appEntries: 1, totalNavEdges: 0 });
+    expect(out.some((m) => m.includes('未识别出任何 Compose/布局/Fragment 屏幕'))).toBe(true);
+  });
+
+  it('Screen under-detection stays silent once a richer screen exists', () => {
+    // 3 screens, only 1 is a manifest Activity → richScreens 2 → no under-detection warning.
+    const out = msgs({ screenCount: 3, activityScreens: 1, appEntries: 1, totalNavEdges: 2 });
+    expect(out.some((m) => m.includes('未识别出任何 Compose/布局/Fragment 屏幕'))).toBe(false);
+  });
+
+  it('Screen under-detection stays silent on a complete multi-Activity View app (C1)', () => {
+    // 3 Activities, each its own screen, all-code UI (no Compose/layout/Fragment):
+    // richScreens 0 but activityScreens>1 → legitimately complete, must NOT warn.
+    const out = msgs({ screenCount: 3, activityScreens: 3, appEntries: 1, totalNavEdges: 2 });
+    expect(out).toEqual([]);
+  });
+
+  it('a healthy nav graph produces no warnings', () => {
+    expect(msgs({ screenCount: 10, activityScreens: 2, appEntries: 1, totalNavEdges: 12 })).toEqual([]);
   });
 });

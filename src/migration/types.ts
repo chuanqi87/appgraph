@@ -80,6 +80,9 @@ export interface MigrationGraph {
   edges: AppEdge[];
   order?: MigrationOrder;
   coverageWarnings: CoverageWarning[];
+  /** Third-party navigation/UI frameworks fingerprinted (S4) — declared blind
+   *  spots the plan surfaces. Optional so schema-v1 documents still read. */
+  navFrameworks?: string[];
 }
 
 /** An empty migration graph for a fresh `source → target` migration. */
@@ -94,6 +97,7 @@ export function emptyMigrationGraph(
     nodes: [],
     edges: [],
     coverageWarnings: [],
+    navFrameworks: [],
   };
 }
 

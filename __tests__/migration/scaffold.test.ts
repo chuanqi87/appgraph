@@ -68,6 +68,27 @@ describe('renderAppScaffoldBrief', () => {
   });
 });
 
+describe('renderAppScaffoldBrief · 已知盲区 (P0-3)', () => {
+  it('surfaces coverage warnings + third-party nav frameworks so they reach the agent', () => {
+    const p = {
+      ...planWith([moduleBrief({ screens: [{ name: 'S', navigatesTo: [], layouts: [] }] })]),
+      coverageWarnings: [{ message: '识别出 8 个 Screen 但只有 0 条 navigates_to' }],
+      navFrameworks: ['Circuit'],
+    } as unknown as MigrationPlan;
+    const md = renderAppScaffoldBrief(p);
+    expect(md).toContain('已知盲区');
+    expect(md).toContain('Circuit');
+    expect(md).toContain('识别出 8 个 Screen');
+    // The blind-spot section precedes the route-table section (read-this-first).
+    expect(md.indexOf('已知盲区')).toBeLessThan(md.indexOf('## 全局路由表'));
+  });
+
+  it('omits the section entirely when there are no blind spots', () => {
+    const md = renderAppScaffoldBrief(plan); // plan has neither field set
+    expect(md).not.toContain('已知盲区');
+  });
+});
+
 describe('buildAppScaffoldContract', () => {
   it('emits deep-link (auto), permission + entry (agent) checks under module "app"', () => {
     const contract = buildAppScaffoldContract(plan);
