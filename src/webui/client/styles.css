@@ -12,6 +12,12 @@
   --code-fg: #d8dee9;
   --radius: 6px;
   --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  /* chip tones */
+  --chip-ok: #4caf7d;
+  --chip-info: #2f6fed;
+  --chip-warn: #b88500;
+  --chip-danger: #c53030;
+  --chip-accent: #8b5cf6;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -27,6 +33,11 @@
     --danger-bg: #2a1414;
     --code-bg: #0b0e11;
     --code-fg: #d8dee9;
+    --chip-ok: #5fd09a;
+    --chip-info: #5b8dff;
+    --chip-warn: #e0b341;
+    --chip-danger: #ff8080;
+    --chip-accent: #b58bff;
   }
 }
 
@@ -481,3 +492,393 @@ button.primary {
   max-width: 320px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
+
+/* ===========================================================================
+   AppGraph refactor — chips, breadcrumb, meter, detail, overview, legend
+   =========================================================================== */
+
+/* ---- chips ---- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.chip-link {
+  text-decoration: none;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.chip-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* color chips inherit their kind color as a left accent bar + tinted bg */
+.chip-color {
+  --chip-color: #64707d;
+  border-color: color-mix(in srgb, var(--chip-color) 45%, var(--border));
+  background: color-mix(in srgb, var(--chip-color) 12%, var(--bg-alt));
+  color: var(--fg);
+  border-left: 3px solid var(--chip-color);
+  padding-left: 8px;
+}
+
+.chip-ok { color: var(--chip-ok); border-color: color-mix(in srgb, var(--chip-ok) 50%, var(--border)); }
+.chip-info { color: var(--chip-info); border-color: color-mix(in srgb, var(--chip-info) 50%, var(--border)); }
+.chip-warn { color: var(--chip-warn); border-color: color-mix(in srgb, var(--chip-warn) 50%, var(--border)); }
+.chip-danger { color: var(--chip-danger); border-color: color-mix(in srgb, var(--chip-danger) 50%, var(--border)); }
+.chip-accent { color: var(--chip-accent); border-color: color-mix(in srgb, var(--chip-accent) 50%, var(--border)); }
+
+.badge-info { background: color-mix(in srgb, var(--chip-info) 14%, var(--bg-alt)); color: var(--chip-info); }
+
+.chip-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.chip-row:last-child { border-bottom: none; }
+
+.chip-row-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+  position: relative;
+  padding-left: 10px;
+}
+
+.chip-row-label::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--edge-color, var(--border));
+}
+
+.chip-group {
+  margin-bottom: 14px;
+}
+
+.chip-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  padding-left: 10px;
+  position: relative;
+}
+
+.chip-group-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--edge-color, var(--border));
+}
+
+/* ---- breadcrumb ---- */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+}
+
+.breadcrumb-sep { opacity: 0.5; }
+
+.breadcrumb-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.breadcrumb-link:hover { text-decoration: underline; }
+
+.breadcrumb-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* ---- meter ---- */
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meter-track {
+  width: 80px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--chip-warn), var(--chip-ok));
+  border-radius: 3px;
+}
+
+.meter-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+}
+
+/* ---- relationship sections ---- */
+
+.rel-section {
+  margin-bottom: 18px;
+}
+
+.rel-groups { margin-top: 4px; }
+
+.edge-chips { display: flex; flex-direction: column; gap: 2px; }
+
+/* ---- detail page ---- */
+
+.detail {
+  padding: 16px 20px;
+  max-width: 920px;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.detail-title {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 18px;
+}
+
+.detail-trust { margin-left: auto; }
+
+.drill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drill-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drill-item .result-path {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- overview (L1) ---- */
+
+.app-overview { padding: 16px 20px; }
+
+.overview-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+@media (max-width: 980px) {
+  .overview-grid { grid-template-columns: 1fr; }
+}
+
+.overview-main { min-width: 0; }
+
+.overview-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.overview-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.overview-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.overview-card-title {
+  font-weight: 700;
+  font-size: 13px;
+  flex: 1;
+}
+
+.overview-card-foot {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mini-graph-host {
+  height: 440px;
+  position: relative;
+  min-height: 0;
+}
+
+.trust-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+
+.warn-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.warn-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.warn-message { flex: 1; }
+
+/* ---- graph legend (overlaid) ---- */
+
+.graph-legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 11px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  max-width: 220px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.legend-group { margin-bottom: 6px; }
+.legend-group:last-child { margin-bottom: 0; }
+
+.legend-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--swatch-color, var(--border));
+  flex: 0 0 auto;
+}
+
+.legend-swatch-dashed {
+  background: repeating-linear-gradient(90deg, var(--swatch-color, var(--border)) 0 4px, transparent 4px 7px);
+  height: 3px;
+}
+
+.legend-swatch-dotted {
+  background: repeating-linear-gradient(90deg, var(--swatch-color, var(--border)) 0 2px, transparent 2px 5px);
+  height: 3px;
+}
+
+.legend-label { color: var(--fg); }

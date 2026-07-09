@@ -14,7 +14,7 @@
  */
 
 import { ContractCheck, UnitContract } from './contract';
-import { BackgroundComponentBrief, CustomViewBrief, DataModelBrief, ModuleBrief, ScreenBrief } from './context';
+import { BackgroundComponentBrief, CustomViewBrief, DataModelBrief, FeatureSectionBrief, ModuleBrief, ScreenBrief } from './context';
 import { isNestedType, typePathKey } from '../../appgraph/qualified-name';
 
 /** The unit shape the renderer needs (MigrationUnit and UnitPlan both satisfy it). */
@@ -32,10 +32,18 @@ export interface BriefUnit {
   dependsOnUnitIds?: string[];
   /** 'dev-only' when every member module is dev-support (benchmark/test/lint). */
   necessity?: string;
+  /** Migration-size signals (P1-3) — symbol count and rough token estimate. */
+  symbolCount?: number;
+  estimatedTokens?: number;
 }
 
 /** How many split-unit member files to list verbatim before eliding. */
 const MAX_LISTED_FILES = 40;
+
+/** `12345` → `12.3k`, keeping the rough estimate readable. */
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
 
 /** Render the full markdown brief for one migration unit. */
 export function renderUnitBrief(
@@ -52,6 +60,13 @@ export function renderUnitBrief(
   lines.push('> [静态]=源码静态解析 · [启发]=代码图启发式(参考,需核实)。');
   lines.push('> 顺序为自底向上:本单元的声明依赖都排在更早的单元,应已先行迁移。');
   lines.push('');
+  if (unit.symbolCount !== undefined && unit.estimatedTokens !== undefined) {
+    lines.push(
+      `规模:符号 ${unit.symbolCount} · 预计 ~${formatTokens(unit.estimatedTokens)} tokens(粗估,` +
+        `供编排器判断是否需按功能簇拆分/选择模型上下文;非精确值)。`
+    );
+    lines.push('');
+  }
   if (unit.wave !== undefined && unit.dependsOnUnitIds !== undefined) {
     const refs = unit.dependsOnUnitIds
       .map((id) => unitRefById?.get(id) ?? id)
@@ -136,6 +151,7 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   }
   lines.push('');
 
+  renderFeatureSections(lines, m.featureSections);
   renderScreens(lines, m.screens);
   renderCustomViews(lines, m.customViews);
   renderBackgroundComponents(lines, m.backgroundComponents);
@@ -148,6 +164,22 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   renderInterface(lines, m);
   renderTestContract(lines, m);
   renderDependencies(lines, m);
+}
+
+function renderFeatureSections(lines: string[], sections: FeatureSectionBrief[] | undefined): void {
+  // Absent on a pre-P1-3 plan.json (additive field).
+  if (!sections || sections.length === 0) return;
+  lines.push('### 功能簇分组 [启发](按 M2 聚类把本模块文件分组;大模块可按簇逐步迁移)');
+  for (const s of sections) {
+    const tag = s.weak ? ' ⚠低置信' : '';
+    lines.push(`- **${s.name}**(${s.role} · 内聚 ${s.cohesion} · ${s.files.length} 文件)${tag}`);
+    for (const f of s.files.slice(0, MAX_LISTED_FILES)) lines.push(`  - ${f}`);
+    if (s.files.length > MAX_LISTED_FILES) {
+      lines.push(`  - …等共 ${s.files.length} 个文件`);
+    }
+  }
+  lines.push('  (簇为启发式聚类,边界可能不精确;仅作迁移分批参考,验收仍以模块公共接口为基线。)');
+  lines.push('');
 }
 
 function renderScreens(lines: string[], screens: ScreenBrief[]): void {

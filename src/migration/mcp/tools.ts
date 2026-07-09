@@ -266,7 +266,9 @@ export class MigrateToolHandler {
     }
     lines.push('');
     for (const u of plan.units) {
-      lines.push(`${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount} → ${u.briefFile}`);
+      lines.push(
+        `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount}${tokenNote(u)} → ${u.briefFile}`
+      );
     }
     lines.push('');
     lines.push('用 migrate_unit {"unit":"<序号或 label>"} 取某个单元的完整工单。');
@@ -773,6 +775,13 @@ function readText(file: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** ` · ~12.3k tok` migration-size estimate, when the plan carries it (P1-3). */
+function tokenNote(u: UnitPlan): string {
+  if (typeof u.estimatedTokens !== 'number') return '';
+  const t = u.estimatedTokens;
+  return ` · ~${t >= 1000 ? `${(t / 1000).toFixed(1)}k` : t} tok`;
 }
 
 function unitMark(u: UnitPlan): string {

@@ -7,7 +7,7 @@
  * Pure + framework-free: takes the wire graph, returns indices. No DOM.
  */
 
-import type { AppEdgeWire, AppGraphWire, AppNodeWire } from './wire-types';
+import type { AppEdgeWire, AppGraphWire, AppNodeWire } from '../wire-types';
 
 export interface AppGraphModel {
   graph: AppGraphWire;

@@ -112,10 +112,16 @@ export function planUnits(
       devOnly: u.moduleIds.every((id) => devOnlyModule(id)),
     }));
 
+  // P1-3: a module's dominant Feature sig — small modules sharing one pack into
+  // the same bin first, so a merged unit is a functional pack, not a size
+  // coincidence. Purely a member-ordering affinity; never changes which units
+  // may merge (dependency/acyclicity rules are untouched).
+  const featureKeyOf = buildModuleFeatureKeys(graph);
+
   let merged = 0;
   if (opts.enabled) {
     const before = units.length;
-    units = mergeSmallUnits(units, graph, opts);
+    units = mergeSmallUnits(units, graph, opts, featureKeyOf);
     merged = before - units.length;
   }
 
@@ -246,13 +252,49 @@ function unitAdjacency(
  * Merge small units to a fixpoint (chains collapse fully — folding a small
  * unit into an owner can expose a new merge opportunity for the next round).
  */
-function mergeSmallUnits(units: WorkUnit[], graph: MigrationGraph, opts: PlanningOptions): WorkUnit[] {
+function mergeSmallUnits(
+  units: WorkUnit[],
+  graph: MigrationGraph,
+  opts: PlanningOptions,
+  featureKeyOf: Map<string, string>
+): WorkUnit[] {
   let current = units;
   for (;;) {
-    const next = mergeSmallUnitsOnePass(current, graph, opts);
+    const next = mergeSmallUnitsOnePass(current, graph, opts, featureKeyOf);
     if (next.length === current.length) return current;
     current = next;
   }
+}
+
+/**
+ * module id → its dominant Feature sig (the largest subdivision/cross-module
+ * Feature it participates in), for merge affinity. Empty string when a module
+ * belongs to no such Feature — those sort together but after keyed ones.
+ */
+function buildModuleFeatureKeys(graph: MigrationGraph): Map<string, string> {
+  const bestSize = new Map<string, number>();
+  const key = new Map<string, string>();
+  for (const n of graph.nodes) {
+    if (n.kind !== 'Feature') continue;
+    const role = typeof n.attrs?.role === 'string' ? n.attrs.role : n.subtype;
+    if (role !== 'subdivision' && role !== 'cross-module') continue;
+    const span = Array.isArray(n.attrs?.moduleSpan) ? (n.attrs!.moduleSpan as string[]) : [];
+    const size = typeof n.attrs?.size === 'number' ? n.attrs.size : 0;
+    const sig = typeof n.attrs?.sig === 'string' ? n.attrs.sig : n.id;
+    for (const moduleId of span) {
+      if (size > (bestSize.get(moduleId) ?? -1)) {
+        bestSize.set(moduleId, size);
+        key.set(moduleId, sig);
+      }
+    }
+  }
+  return key;
+}
+
+/** A work unit's merge-affinity key: the min feature key over its modules. */
+function unitFeatureKey(unit: WorkUnit, featureKeyOf: Map<string, string>): string {
+  const keys = unit.moduleIds.map((m) => featureKeyOf.get(m) ?? '').filter(Boolean).sort();
+  return keys[0] ?? '';
 }
 
 /**
@@ -263,7 +305,8 @@ function mergeSmallUnits(units: WorkUnit[], graph: MigrationGraph, opts: Plannin
 function mergeSmallUnitsOnePass(
   units: WorkUnit[],
   graph: MigrationGraph,
-  opts: PlanningOptions
+  opts: PlanningOptions,
+  featureKeyOf: Map<string, string>
 ): WorkUnit[] {
   const { deps, dependents } = unitAdjacency(units, graph);
 
@@ -299,7 +342,13 @@ function mergeSmallUnitsOnePass(
   for (const key of [...groups.keys()].sort()) {
     const members = groups.get(key)!.filter((i) => !consumed.has(i));
     if (members.length === 0) continue;
-    members.sort((a, b) => units[a]!.label.localeCompare(units[b]!.label));
+    // Feature affinity: modules sharing a dominant Feature sit adjacent so they
+    // pack into the same bin; label breaks the tie (keeps the order stable).
+    members.sort((a, b) => {
+      const fa = unitFeatureKey(units[a]!, featureKeyOf);
+      const fb = unitFeatureKey(units[b]!, featureKeyOf);
+      return fa.localeCompare(fb) || units[a]!.label.localeCompare(units[b]!.label);
+    });
 
     // Bin-pack this group's members by size; split a bin whenever adding the
     // next member would overflow it, or would create a path between two

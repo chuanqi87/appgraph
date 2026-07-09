@@ -25,6 +25,7 @@ import { MigrationGraph } from '../types';
 import {
   AssemblyInput,
   CustomViewBrief,
+  FeatureSectionBrief,
   ImpliedDependency,
   ModuleBrief,
   assembleModuleBrief,
@@ -42,6 +43,20 @@ import {
 
 export const MIGRATION_PLAN_SCHEMA_VERSION = 4;
 
+/**
+ * Rough tokens-per-symbol coefficient for the migration-size estimate (P1-3).
+ * A code symbol (function/class/property) averages on the order of this many
+ * source tokens the conversion agent must read+rewrite. It is a PLANNING signal
+ * only — deliberately coarse — so an orchestrator can pick a model context
+ * window / decide whether to split a unit. Not a fingerprint input.
+ */
+export const SYMBOL_TOKEN_COEFF = 30;
+
+/** Rough token estimate for a unit's migration work (P1-3). */
+export function estimateUnitTokens(symbolCount: number): number {
+  return symbolCount * SYMBOL_TOKEN_COEFF;
+}
+
 /** One migration unit with its member-module briefs and rendered work order. */
 export interface UnitPlan {
   id: string;
@@ -56,6 +71,9 @@ export interface UnitPlan {
   /** split only: the member files this sub-unit migrates. */
   files?: string[];
   symbolCount: number;
+  /** Rough migration-size estimate in tokens (symbolCount × coeff) — a planning
+   *  signal for picking a model context window; not a fingerprint input. */
+  estimatedTokens: number;
   /** 0-based parallel wave — deps sit in strictly earlier waves (schema ≥ 4). */
   wave: number;
   /** Ids of the units this unit directly depends on, sorted (schema ≥ 4). */
@@ -141,6 +159,7 @@ export function buildMigrationPlan(
       featureSig: unit.featureSig,
       files: unit.files,
       symbolCount: unit.symbolCount,
+      estimatedTokens: estimateUnitTokens(unit.symbolCount),
       wave: unit.wave,
       dependsOnUnitIds: unit.dependsOnUnitIds,
       ...(unit.necessity ? { necessity: unit.necessity } : {}),
@@ -267,6 +286,7 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
   const nodeById = new Map<string, Node>(nodes.map((n) => [n.id, n]));
   const moduleIdToNodeIds = assignNodeIdsByModule(nodes, moduleDirs, moduleDirToId);
   const customViewsByModule = detectCustomViews(reader, moduleIdToNodeIds, nodeById);
+  const featureSectionsByModule = buildFeatureSections(graph, moduleIdToNodeIds, nodeById);
 
   // Declared depends_on is the ground truth; lifted coupling is advisory.
   // Test-scoped declared deps (testImplementation/…) are kept apart: they are
@@ -398,7 +418,55 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     deeplinksByModule,
     layoutsByScreenId,
     customViewsByModule,
+    featureSectionsByModule,
   };
+}
+
+/**
+ * Build the per-module functional clusters (P1-3): intersect each subdivision /
+ * cross-module Feature (M2) with the module's own files. Aligned Features (one
+ * Feature == the whole module) are skipped — they add no grouping. Sections are
+ * ordered by cluster size (largest first) so the biggest chunk of work leads.
+ */
+function buildFeatureSections(
+  graph: MigrationGraph,
+  moduleIdToNodeIds: Map<string, string[]>,
+  nodeById: Map<string, Node>
+): Map<string, FeatureSectionBrief[]> {
+  const filesOfModule = new Map<string, Set<string>>();
+  for (const [moduleId, nodeIds] of moduleIdToNodeIds) {
+    const files = new Set<string>();
+    for (const id of nodeIds) {
+      const f = nodeById.get(id)?.filePath;
+      if (f !== undefined) files.add(f);
+    }
+    filesOfModule.set(moduleId, files);
+  }
+
+  const out = new Map<string, FeatureSectionBrief[]>();
+  for (const n of graph.nodes) {
+    if (n.kind !== 'Feature' || n.platform !== 'android') continue;
+    const role = typeof n.attrs?.role === 'string' ? n.attrs.role : n.subtype;
+    if (role !== 'subdivision' && role !== 'cross-module') continue; // aligned adds no grouping
+    const members = Array.isArray(n.attrs?.members) ? (n.attrs!.members as string[]) : [];
+    if (members.length === 0) continue;
+    const memberSet = new Set(members);
+    const cohesion = typeof n.attrs?.cohesion === 'number' ? n.attrs.cohesion : 0;
+    const weak = n.attrs?.weak === true;
+    for (const [moduleId, files] of filesOfModule) {
+      const inter = [...memberSet].filter((f) => files.has(f)).sort();
+      if (inter.length === 0) continue;
+      const list = out.get(moduleId) ?? [];
+      list.push({ name: n.name, role: role!, cohesion, ...(weak ? { weak } : {}), files: inter });
+      out.set(moduleId, list);
+    }
+  }
+  // Largest cluster first, then by name for a stable order.
+  for (const [k, v] of out) {
+    v.sort((a, b) => b.files.length - a.files.length || a.name.localeCompare(b.name));
+    out.set(k, v);
+  }
+  return out;
 }
 
 /**

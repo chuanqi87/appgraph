@@ -5,6 +5,8 @@ import { renderCodeGraphNodesView } from './views/codegraph-nodes-view';
 import { renderCodeGraphFilesView } from './views/codegraph-files-view';
 import { renderCodeGraphEdgesView } from './views/codegraph-edges-view';
 import { renderAppGraphView } from './views/appgraph-view';
+import { renderAppGraphModuleView } from './views/appgraph-module-view';
+import { renderAppNodeDetail } from './views/appgraph-node-detail';
 import { renderGraphView } from './views/graph-view';
 
 type RouteRender = (
@@ -43,8 +45,11 @@ addRoute('/codegraph/nodes/:id', (c, p, q) => renderCodeGraphNodesView(c, { id: 
 addRoute('/codegraph/files', (c, _p, q) => renderCodeGraphFilesView(c, q));
 addRoute('/codegraph/edges', (c, _p, q) => renderCodeGraphEdgesView(c, q));
 addRoute('/codegraph/graph', (c, _p, q) => renderGraphView(c, { source: 'codegraph', query: q }));
-addRoute('/appgraph', (c, _p, q) => renderAppGraphView(c, {}, q));
-addRoute('/appgraph/nodes/:id', (c, p, q) => renderAppGraphView(c, { id: p.id }, q));
+// AppGraph drill-down: L1 overview (default) → L2 module → L3 node → graph.
+// The overview is the landing (not the graph) so the architecture reads first.
+addRoute('/appgraph', (c) => renderAppGraphView(c));
+addRoute('/appgraph/modules/:id', (c, p) => renderAppGraphModuleView(c, p.id));
+addRoute('/appgraph/nodes/:id', (c, p) => renderAppNodeDetail(c, p.id));
 addRoute('/appgraph/graph', (c, _p, q) => renderGraphView(c, { source: 'appgraph', query: q }));
 
 let currentStatus: StatusResponse | null = null;
@@ -101,7 +106,7 @@ function renderTabs(currentPath: string): void {
     // intuitive "show me the structure" entry point; the table/list views
     // are one click away from there ("browse as table →").
     tab('CodeGraph', '/codegraph/graph', 'codegraph', !currentStatus?.codegraph.indexed),
-    tab('AppGraph', '/appgraph/graph', 'appgraph', !currentStatus?.appgraph.built)
+    tab('AppGraph', '/appgraph', 'appgraph', !currentStatus?.appgraph.built)
   );
 }
 
@@ -113,7 +118,7 @@ async function init(): Promise<void> {
 
   if (!location.hash) {
     location.hash = currentStatus?.appgraph.built
-      ? '#/appgraph/graph'
+      ? '#/appgraph'
       : currentStatus?.codegraph.indexed
         ? '#/codegraph/graph'
         : '#/';

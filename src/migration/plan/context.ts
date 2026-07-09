@@ -111,6 +111,24 @@ export interface DataModelBrief {
   fields: FieldSchema[];
 }
 
+/**
+ * A functional cluster within a module (P1-3): the intersection of a subdivision
+ * / cross-module Feature (M2) with this module's files. Gives the conversion
+ * agent a FUNCTIONAL grouping of the module's files instead of a flat list, so a
+ * large module can be migrated cluster-by-cluster.
+ */
+export interface FeatureSectionBrief {
+  /** Feature hub name (advisory M2 label). */
+  name: string;
+  /** Feature role: 'subdivision' | 'cross-module'. */
+  role: string;
+  cohesion: number;
+  /** Low-trust cross-module grab-bag (P1-4 attrs.weak). */
+  weak?: boolean;
+  /** This module's files that belong to the cluster (project-relative, sorted). */
+  files: string[];
+}
+
 /** Everything the analysis knows about one source module — the brief's data. */
 export interface ModuleBrief {
   moduleId: string;
@@ -136,6 +154,8 @@ export interface ModuleBrief {
   dataModels: DataModelBrief[];
   /** Custom View subclasses (P1-6) — inheritance→composition rewrite anchors. */
   customViews: CustomViewBrief[];
+  /** Functional clusters within the module (P1-3) — file grouping by Feature. */
+  featureSections: FeatureSectionBrief[];
   /** DI assembly this module declares (U4) — manual wiring on the target. */
   di?: DiFacts;
   /** Reactive states this module exposes/collects (U5). */
@@ -183,6 +203,8 @@ export interface AssemblyInput {
   layoutsByScreenId: Map<string, string[]>;
   /** module id → custom View subclasses it declares (P1-6). */
   customViewsByModule: Map<string, CustomViewBrief[]>;
+  /** module id → functional clusters (P1-3), Feature ∩ module files. */
+  featureSectionsByModule: Map<string, FeatureSectionBrief[]>;
 }
 
 /**
@@ -233,6 +255,9 @@ export function assembleModuleBrief(
     customViews: (input.customViewsByModule.get(moduleId) ?? [])
       .filter((v) => inFilter(v.file))
       .sort((a, b) => a.name.localeCompare(b.name)),
+    featureSections: (input.featureSectionsByModule.get(moduleId) ?? [])
+      .map((s) => ({ ...s, files: s.files.filter((f) => inFilter(f)) }))
+      .filter((s) => s.files.length > 0),
     di: asDiFacts(module?.attrs?.di),
     flows: asFlowFacts(module?.attrs?.flows),
     constants: asConstantsFacts(module?.attrs?.constants),

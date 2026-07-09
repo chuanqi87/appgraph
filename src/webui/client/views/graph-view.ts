@@ -4,7 +4,7 @@ import forceAtlas2 from 'graphology-layout-forceatlas2';
 import louvain from 'graphology-communities-louvain';
 import { api } from '../api';
 import { buildAppGraphModel, type AppGraphModel } from '../appgraph-model';
-import { badge, chip, el, empty, errorBox, link, mount, spinner } from '../render';
+import { badge, el, empty, errorBox, link, mount, spinner } from '../render';
 import { renderNodeDetail } from './codegraph-node-detail';
 import { renderAppNodeDetail } from './appgraph-node-detail';
 import { APP_EDGE_STYLES, APP_NODE_STYLES, edgeStyle, nodeColor, nodeSize } from '../visual';
@@ -16,7 +16,7 @@ export interface GraphViewOptions {
   query: URLSearchParams;
 }
 
-type AppViewMode = 'module' | 'screen-flow' | 'feature' | 'capability' | 'all';
+export type AppViewMode = 'module' | 'screen-flow' | 'feature' | 'capability' | 'all';
 type ColorMode = 'kind' | 'community';
 
 /** Force-directed canvas. For CodeGraph: a bounded local subgraph around a
@@ -74,6 +74,12 @@ async function renderCodeGraphSubgraph(
   let colorMode: ColorMode = 'kind';
   let focus: string | null = start;
   const legendEl = el('span', { class: 'field-label' }, []);
+  // Declared before the closures that reference it so the forward reference
+  // doesn't collapse `renderer`'s inferred type to void (TS control-flow quirk).
+  let renderer: Sigma | undefined;
+  const refreshFocus = (): void => {
+    renderer?.setSetting('nodeReducer', focusReducer(graph, focus));
+  };
   const recolor = (): void => {
     applyColorMode(graph, colorMode, legendEl);
     layoutGraph(graph);
@@ -81,8 +87,7 @@ async function renderCodeGraphSubgraph(
     renderer?.refresh();
     void renderer?.getCamera().animatedReset();
   };
-  let renderer = mountSigma(graph, canvasHost, { focus: null, onNodeClick: (id) => showDetail(id) });
-  const refreshFocus = (): void => renderer?.setSetting('nodeReducer', focusReducer(graph, focus));
+  renderer = mountSigma(graph, canvasHost, { focus: null, onNodeClick: (id) => showDetail(id) });
   recolor();
 
   mount(
@@ -188,6 +193,15 @@ async function renderAppGraphWhole(
 
   let colorMode: ColorMode = 'kind';
   const legendEl = el('span', { class: 'field-label' }, []);
+  // `focus` can come from the URL (initial) or change on click; keep a mutable
+  // local so the reducer reflects the latest focus without a re-mount.
+  let currentFocus: string | null = focus ?? null;
+  const focusValue = (): string | null => currentFocus;
+  // Declared before the closures that reference it (see CodeGraph note above).
+  let renderer: Sigma | undefined;
+  const refreshFocus = (): void => {
+    renderer?.setSetting('nodeReducer', focusReducer(graph, focusValue()));
+  };
   const recolor = (): void => {
     applyColorMode(graph, colorMode, legendEl);
     layoutGraph(graph);
@@ -195,15 +209,7 @@ async function renderAppGraphWhole(
     renderer?.refresh();
     void renderer?.getCamera().animatedReset();
   };
-  const renderer = mountSigma(graph, canvasHost, { focus: focus ?? null, onNodeClick: (id) => showDetail(id) });
-  const refreshFocus = (): void => renderer.setSetting('nodeReducer', focusReducer(graph, focusValue()));
-
-  // `focus` can come from the URL (initial) or change on click; keep a mutable
-  // local so the reducer reflects the latest focus without a re-mount.
-  let currentFocus: string | null = focus ?? null;
-  function focusValue(): string | null {
-    return currentFocus;
-  }
+  renderer = mountSigma(graph, canvasHost, { focus: focus ?? null, onNodeClick: (id) => showDetail(id) });
   recolor();
 
   mount(
@@ -452,11 +458,11 @@ function addAppEdges(graph: Graph, edges: AppEdgeWire[]): void {
   }
 }
 
-function layoutGraph(graph: Graph): void {
+export function layoutGraph(graph: Graph): void {
   forceAtlas2.assign(graph, { iterations: 200, settings: forceAtlas2.inferSettings(graph) });
 }
 
-interface MountOptions {
+export interface MountOptions {
   focus: string | null;
   onNodeClick: (id: string) => void;
 }
@@ -478,6 +484,28 @@ function mountSigma(graph: Graph, container: HTMLElement, opts: MountOptions): S
     window.removeEventListener('hashchange', disposeOnNavigate);
   };
   window.addEventListener('hashchange', disposeOnNavigate, { once: true });
+  return renderer;
+}
+
+/** One-shot mount of an AppGraph subgraph canvas — used by the overview's
+ *  centerpiece (modules-only) and reusable for any view mode. Builds the
+ *  graphology graph, lays it out, mounts sigma with semantic edge styling +
+ *  focus highlight, and overlays the legend. Returns the renderer (caller
+ *  usually ignores it — cleanup is wired to hashchange). */
+export function mountAppCanvas(
+  model: AppGraphModel,
+  view: AppViewMode,
+  host: HTMLElement,
+  opts: { focus?: string | null; onNodeClick: (id: string) => void }
+): Sigma {
+  const sub = appSubgraph(model, view);
+  const graph = new Graph();
+  for (const n of sub.nodes) upsertAppNode(graph, model, n, n.id === opts.focus ? 9 : undefined);
+  addAppEdges(graph, sub.edges);
+  applyColorMode(graph, 'kind', el('span', {}));
+  layoutGraph(graph);
+  const renderer = mountSigma(graph, host, { focus: opts.focus ?? null, onNodeClick: opts.onNodeClick });
+  host.appendChild(legendPanelFor(sub));
   return renderer;
 }
 

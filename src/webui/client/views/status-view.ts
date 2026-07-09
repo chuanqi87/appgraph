@@ -71,14 +71,19 @@ async function renderAppGraphSection(status: StatusResponse): Promise<HTMLElemen
     const { graph } = await api.appGraph();
     const byKind: Record<string, number> = {};
     for (const n of graph.nodes) byKind[n.kind] = (byKind[n.kind] ?? 0) + 1;
+    const count = (kind: string): number => byKind[kind] ?? 0;
+    const navEdges = graph.edges.filter((e) => e.kind === 'navigates_to').length;
     return el('div', {}, [
-      el('h3', {}, ['AppGraph', ' ', link('View graph →', '#/appgraph/graph')]),
+      el('h3', {}, ['AppGraph', ' ', link('View architecture →', '#/appgraph')]),
       el('div', { class: 'stats-grid' }, [
         statCard(graph.app.name, 'App'),
         statCard(graph.platform, 'Platform'),
-        statCard(graph.nodes.length, 'Nodes'),
-        statCard(graph.edges.length, 'Edges'),
-        statCard(graph.coverageWarnings.length, 'Coverage warnings'),
+        statCard(count('ArchModule'), 'Modules'),
+        statCard(count('Feature'), 'Features'),
+        statCard(count('Screen'), 'Screens'),
+        statCard(count('Capability'), 'Capabilities'),
+        statCard(navEdges, 'Nav edges'),
+        statCard(graph.coverageWarnings.length, 'Warnings'),
       ]),
       el('div', { class: 'section-title' }, ['Nodes by kind']),
       kindBarList(byKind),

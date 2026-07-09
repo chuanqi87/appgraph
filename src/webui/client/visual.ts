@@ -7,7 +7,7 @@
  *   anchors (green), permissions = restriction (red), screens = UX (blue)…
  */
 
-import type { AppEdgeWire, AppNodeKind, AppNodeWire } from './wire-types';
+import type { AppEdgeWire, AppNodeWire } from '../wire-types';
 import type { AppGraphModel } from './appgraph-model';
 
 export interface NodeStyle {
@@ -135,5 +135,3 @@ export function featureRoleTone(role: string): { label: string; tone: string } {
       return { label: 'Aligned', tone: 'ok' };
   }
 }
-
-export type { AppNodeKind };

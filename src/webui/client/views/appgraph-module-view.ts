@@ -10,10 +10,9 @@
  */
 
 import { api } from '../api';
-import { buildAppGraphModel, incoming, outgoing, type AppGraphModel } from '../appgraph-model';
+import { buildAppGraphModel, incoming, outgoing, roleOf, type AppGraphModel } from '../appgraph-model';
 import {
   chip,
-  chipLink,
   colorChip,
   colorChipLink,
   breadcrumb,
@@ -26,7 +25,7 @@ import {
   section,
   spinner,
 } from '../render';
-import { dependsOnFlag, edgeStyle, featureRoleTone, nodeColor, roleOf } from '../visual';
+import { dependsOnFlag, edgeStyle, featureRoleTone, nodeColor } from '../visual';
 import type { AppEdgeWire, AppNodeWire } from '../../wire-types';
 
 export async function renderAppGraphModuleView(container: HTMLElement, id: string): Promise<void> {

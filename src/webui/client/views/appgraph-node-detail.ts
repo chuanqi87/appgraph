@@ -12,10 +12,9 @@
  */
 
 import { api } from '../api';
-import { buildAppGraphModel, incoming, outgoing, owningModule, type AppGraphModel } from '../appgraph-model';
+import { buildAppGraphModel, incoming, outgoing, owningModule, roleOf, type AppGraphModel } from '../appgraph-model';
 import {
   chip,
-  chipLink,
   colorChip,
   colorChipLink,
   breadcrumb,
@@ -34,7 +33,6 @@ import {
   nodeColor,
   provenanceLabel,
   provenanceTrust,
-  roleOf,
 } from '../visual';
 import type { AppEdgeWire, AppNodeWire } from '../../wire-types';
 
