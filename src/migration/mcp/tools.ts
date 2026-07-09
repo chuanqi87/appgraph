@@ -135,6 +135,22 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
       },
     },
   },
+  {
+    name: 'app_screens',
+    description:
+      '应用屏幕清单:每个 Screen 的名称/类型(activity|fragment|compose|xml-layout…)及其 navigates_to 跳转目标。源工程的产品结构总览。',
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
+  },
+  {
+    name: 'app_nav',
+    description: '页面跳转图:全部 navigates_to 边(Screen → Screen),含派生自 Intent/Compose 导航的边。',
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
+  },
+  {
+    name: 'app_features',
+    description: '功能簇(Feature):确定性聚类出的功能模块及其成员。按“功能”而非工程模块看应用。',
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
+  },
 ];
 
 const PIPELINE_HINT =
@@ -175,6 +191,12 @@ export class MigrateToolHandler {
         );
       case 'migrate_ledger':
         return this.ledger(root, typeof args.unit === 'string' ? args.unit : undefined);
+      case 'app_screens':
+        return this.appScreens(root);
+      case 'app_nav':
+        return this.appNav(root);
+      case 'app_features':
+        return this.appFeatures(root);
       default:
         throw new Error(`未知工具:${name}`);
     }
@@ -469,6 +491,71 @@ export class MigrateToolHandler {
     }
     return text(lines.join('\n'));
   }
+
+  // --- app-semantic views (read the migration graph's app layer) -------------
+
+  private appScreens(root: string): ToolResult {
+    const graph = this.loadGraph(root);
+    if (!graph) return text(PIPELINE_HINT);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const navFrom = new Map<string, string[]>();
+    for (const e of graph.edges) {
+      if (e.kind !== 'navigates_to') continue;
+      const to = byId.get(e.to);
+      if (to) (navFrom.get(e.from) ?? navFrom.set(e.from, []).get(e.from)!).push(to.name);
+    }
+    const screens = graph.nodes.filter((n) => n.kind === 'Screen').sort(byName);
+    const lines = [`Screen ${screens.length} 个:`];
+    for (const s of screens.slice(0, MAX_LIST)) {
+      const targets = (navFrom.get(s.id) ?? []).sort();
+      const sub = s.subtype ? ` [${s.subtype}]` : '';
+      const nav = targets.length ? ` → ${targets.join(', ')}` : '';
+      lines.push(`  · ${s.name}${sub}${nav}`);
+    }
+    if (screens.length > MAX_LIST) lines.push(`  … 及另外 ${screens.length - MAX_LIST} 个`);
+    return text(lines.join('\n'));
+  }
+
+  private appNav(root: string): ToolResult {
+    const graph = this.loadGraph(root);
+    if (!graph) return text(PIPELINE_HINT);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const edges = graph.edges
+      .filter((e) => e.kind === 'navigates_to')
+      .map((e) => ({ from: byId.get(e.from)?.name ?? e.from, to: byId.get(e.to)?.name ?? e.to }))
+      .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+    const lines = [`navigates_to ${edges.length} 条:`];
+    for (const e of edges.slice(0, MAX_LIST)) lines.push(`  ${e.from} → ${e.to}`);
+    if (edges.length > MAX_LIST) lines.push(`  … 及另外 ${edges.length - MAX_LIST} 条`);
+    return text(lines.join('\n'));
+  }
+
+  private appFeatures(root: string): ToolResult {
+    const graph = this.loadGraph(root);
+    if (!graph) return text(PIPELINE_HINT);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const members = new Map<string, string[]>();
+    for (const e of graph.edges) {
+      if (e.kind !== 'app_contains') continue;
+      const from = byId.get(e.from);
+      const to = byId.get(e.to);
+      if (from?.kind === 'Feature' && to) {
+        (members.get(e.from) ?? members.set(e.from, []).get(e.from)!).push(to.name);
+      }
+    }
+    const features = graph.nodes.filter((n) => n.kind === 'Feature').sort(byName);
+    const lines = [`Feature ${features.length} 个:`];
+    for (const f of features.slice(0, MAX_LIST)) {
+      const ms = (members.get(f.id) ?? []).sort();
+      lines.push(`  · ${f.name}${ms.length ? `: ${ms.join(', ')}` : ''}`);
+    }
+    if (features.length > MAX_LIST) lines.push(`  … 及另外 ${features.length - MAX_LIST} 个`);
+    return text(lines.join('\n'));
+  }
+}
+
+function byName(a: AppNode, b: AppNode): number {
+  return a.name.localeCompare(b.name);
 }
 
 // =============================================================================
