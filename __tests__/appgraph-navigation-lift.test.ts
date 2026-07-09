@@ -122,6 +122,72 @@ fun goAbout(nav: NavHostController) { nav.navigate("about") }
     expect(graph.edges.filter((e) => e.kind === 'navigates_to').every((e) => e.provenance === 'lifted')).toBe(true);
   });
 
+  it('lifts FragmentTransaction / DialogFragment navigation to Screen navigates_to (P1-1)', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'navfrag-'));
+    const w = (rel: string, s: string): void => {
+      const f = path.join(root!, rel);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, s, 'utf8');
+    };
+    w('app/build.gradle.kts', 'dependencies { implementation("androidx.fragment:fragment") }');
+    w(
+      'app/src/main/AndroidManifest.xml',
+      '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.f">' +
+        '<application><activity android:name=".HostActivity" android:exported="true"><intent-filter>' +
+        '<action android:name="android.intent.action.MAIN"/>' +
+        '<category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>' +
+        '</application></manifest>'
+    );
+    // Host swaps in fragments programmatically; the *Fragment / *Dialog files are
+    // convention-discovered Screens, so the lift connects host → them.
+    w(
+      'app/src/main/java/com/f/HostActivity.kt',
+      `package com.f
+import androidx.fragment.app.FragmentActivity
+class HostActivity : FragmentActivity() {
+  fun openFeed() { supportFragmentManager.beginTransaction().replace(R.id.container, FeedFragment()).commit() }
+  fun confirm() { ConfirmDialog().show(supportFragmentManager, "confirm") }
+}
+`
+    );
+    // Fragments/dialogs become Screens by hosting a real xml-layout (the koler/
+    // AntennaPod View-system shape) — that's what makes them navigable targets.
+    w('app/src/main/res/layout/fragment_feed.xml',
+      '<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"/>');
+    w('app/src/main/res/layout/dialog_confirm.xml',
+      '<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"/>');
+    w('app/src/main/java/com/f/FeedFragment.kt', `package com.f
+import androidx.fragment.app.Fragment
+class FeedFragment : Fragment() {
+  fun onCreateView(i: Any) { i.inflate(R.layout.fragment_feed, null) }
+}
+`);
+    w('app/src/main/java/com/f/ConfirmDialog.kt', `package com.f
+import androidx.fragment.app.DialogFragment
+class ConfirmDialog : DialogFragment() {
+  fun onCreateView(i: Any) { i.inflate(R.layout.dialog_confirm, null) }
+}
+`);
+
+    const cg = CodeGraph.initSync(root);
+    await cg.indexAll();
+    cg.close();
+    reader = CodeSymbolGraph.open(root);
+    const graph = buildAppGraph(root, reader, { platform: 'android' });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n] as const));
+    const nav = graph.edges
+      .filter((e) => e.kind === 'navigates_to')
+      .map((e) => ({ from: byId.get(e.from)?.name, to: byId.get(e.to)?.name, lifted: e.attrs?.liftedFrom }));
+
+    const feed = nav.find((e) => e.to === 'FeedFragment');
+    const dialog = nav.find((e) => e.to === 'ConfirmDialog');
+    expect(feed).toBeTruthy();
+    expect(feed!.lifted).toBe('android-fragment');
+    expect(dialog).toBeTruthy();
+    // Still provenance:lifted, never source-static.
+    expect(graph.edges.filter((e) => e.kind === 'navigates_to').every((e) => e.provenance === 'lifted')).toBe(true);
+  });
+
   it('lifts Navigation3 entry-provider navigation (nowinandroid shape)', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'navlift3-'));
     const w = (rel: string, s: string): void => {

@@ -155,6 +155,87 @@ import androidx.compose.runtime.Composable
   });
 });
 
+describe('android-fragment synthesis (seam 3d)', () => {
+  let root: string | undefined;
+  let reader: CodeSymbolGraph | undefined;
+  afterEach(() => {
+    reader?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+    root = reader = undefined;
+  });
+
+  it('links FragmentTransaction .replace/.add, reified KTX and DialogFragment .show to the target', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/HostActivity.kt': `package com.x
+import androidx.fragment.app.FragmentActivity
+class HostActivity : FragmentActivity() {
+  fun openFeed() {
+    supportFragmentManager.beginTransaction().replace(R.id.container, FeedFragment()).commit()
+  }
+  fun openSettings() {
+    supportFragmentManager.beginTransaction().add(R.id.container, SettingsFragment.newInstance()).commit()
+  }
+  fun openProfile() {
+    supportFragmentManager.commit { replace<ProfileFragment>(R.id.container) }
+  }
+  fun confirm() {
+    ConfirmDialog().show(supportFragmentManager, "confirm")
+  }
+}
+class FeedFragment
+class SettingsFragment
+class ProfileFragment
+class ConfirmDialog
+`,
+    }));
+    const pairs = synthPairs(reader!, ['android-fragment']);
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'openFeed', to: 'FeedFragment' });
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'openSettings', to: 'SettingsFragment' });
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'openProfile', to: 'ProfileFragment' });
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'confirm', to: 'ConfirmDialog' });
+  });
+
+  it('precision: an ambiguous fragment class name is dropped', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/Host.kt': `package com.x
+class Host {
+  fun go() { supportFragmentManager.beginTransaction().replace(R.id.c, FeedFragment()).commit() }
+}
+class FeedFragment
+`,
+      'feature/src/main/java/com/y/Dup.kt': `package com.y
+class FeedFragment
+`,
+    }));
+    expect(synthPairs(reader!, ['android-fragment']).filter((p) => p.to === 'FeedFragment')).toEqual([]);
+  });
+
+  it('precision: a plain .show() on a non-constructor receiver emits nothing', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/Toast.kt': `package com.x
+class Screen {
+  fun toast(builder: SomethingBuilder) { builder.show() } // not a fragment/dialog nav
+}
+`,
+    }));
+    expect(synthPairs(reader!, ['android-fragment'])).toEqual([]);
+  });
+
+  it('precision: a non-*Fragment/*Dialog target (list.add / builder.show) emits nothing', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/Misc.kt': `package com.x
+class Misc {
+  fun build(list: MutableList<Widget>) { list.add(0, Widget()) }   // List.add, not a fragment txn
+  fun open() { AlertBuilder().show(this, "x") }                     // builder, not a DialogFragment
+}
+class Widget
+class AlertBuilder
+`,
+    }));
+    expect(synthPairs(reader!, ['android-fragment'])).toEqual([]);
+  });
+});
+
 describe('compose-state synthesis (seam 3c)', () => {
   let root: string | undefined;
   let reader: CodeSymbolGraph | undefined;

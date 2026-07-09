@@ -189,13 +189,15 @@ export function buildSemantics(
     ...navXml.screenNodes,
   ];
   const outEdges: AppEdge[] = [
+    // nav_graph.xml edges (manifest, conf 1) FIRST so they win the first-write
+    // dedup over a same-id programmatic android-fragment edge (lifted, conf 0.8).
+    ...navXml.edges,
     ...navLift.navEdges,
     ...compose.containsEdges,
     ...entities.containsEdges,
     ...di.diEdges,
     ...resources.containsEdges,
     ...structure.edges,
-    ...navXml.edges,
   ];
   const warnings: CoverageWarning[] = [
     ...compose.warnings,

@@ -167,6 +167,90 @@ export function composeRouteEdges(ctx: ResolutionContext): Edge[] {
   return edges;
 }
 
+// --- seam 3d · android-fragment (FragmentTransaction / DialogFragment) --------
+
+/**
+ * Fragment/Dialog navigation targets, INLINE forms only (a cross-statement
+ * variable form is dropped — silent beats wrong):
+ *   - `.replace(R.id.x, MyFragment())` / `.add(containerId, MyFragment.newInstance())`
+ *   - reified KTX `commit { replace<MyFragment>(R.id.x) }`
+ *   - `MyDialog().show(fm, tag)` / `MyDialog.newInstance(...).show(fm, tag)`
+ * The target must be named `*Fragment`/`*Dialog` (so `list.add(0, Foo())` and
+ * `builder.show()` don't produce spurious edges) AND resolve to exactly one class.
+ */
+// `.replace(container, Fragment(…))` — container is an identifier (R.id.x / a var),
+// then the fragment class as a constructor / newInstance call.
+const FRAGMENT_TXN_RE =
+  /\b(?:replace|add)\s*\(\s*[A-Za-z_][\w.]*\s*,\s*([A-Z]\w*)\s*(?:\(|\.newInstance|\.getInstance)/g;
+// Reified KTX: `replace<MyFragment>(…)` / `add<MyFragment>(…)`.
+const FRAGMENT_KTX_RE = /\b(?:replace|add)\s*<\s*([A-Z]\w*)\s*>/g;
+// `MyDialog().show(fm, tag)` / `MyDialog.newInstance(args).show(fm, tag)`.
+const DIALOG_SHOW_RE = /\b([A-Z]\w*)\s*(?:\([^;{}\n]*\)|\.newInstance\s*\([^;{}\n]*\))\s*\.show\s*\(/g;
+// Precision gate: only a `*Fragment` / `*Dialog`-named target is a fragment nav —
+// this is what keeps `list.add(0, Foo())` and `builder.show()` from producing a
+// spurious edge (mirrors android-structure's SCREEN_FILE_RE naming convention).
+const FRAGMENT_NAME_RE = /(?:Fragment|Dialog)$/;
+
+/**
+ * FragmentTransaction / DialogFragment navigation → calls edge from the
+ * enclosing function to the target Fragment/Dialog class (registered as a Screen
+ * downstream). Same discipline as android-intent: inline only, resolve-to-one.
+ */
+export function androidFragmentEdges(ctx: ResolutionContext): Edge[] {
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+
+  for (const file of ctx.getAllFiles()) {
+    if (!file.endsWith('.kt') && !file.endsWith('.java')) continue;
+    const content = ctx.readFile(file);
+    if (!content) continue;
+    // Cheap gate: a fragment-txn / dialog-show construct must plausibly be here.
+    if (
+      !content.includes('.show(') &&
+      !content.includes('replace') &&
+      !content.includes('.add(')
+    ) {
+      continue;
+    }
+    const safe = stripCommentsForRegex(content, 'java');
+    const fns = ctx.getNodesInFile(file).filter((n) => n.kind === 'method' || n.kind === 'function');
+
+    const scan = (re: RegExp, via: string): void => {
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(safe)) !== null) {
+        const className = m[1]!;
+        if (!FRAGMENT_NAME_RE.test(className)) continue; // not a fragment/dialog by name
+        const targets = ctx.getNodesByName(className).filter((n) => n.kind === 'class');
+        if (targets.length !== 1) continue; // ambiguous or unresolved — never guess
+        const target = targets[0]!;
+        const line = safe.slice(0, m.index).split('\n').length;
+        const encl = enclosingFn(fns, line);
+        if (!encl || encl.id === target.id) continue;
+        const key = `${encl.id}>${target.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: encl.id,
+          target: target.id,
+          kind: 'calls',
+          line,
+          provenance: 'heuristic',
+          metadata: {
+            synthesizedBy: 'android-fragment',
+            via,
+            registeredAt: `${target.filePath}:${target.startLine}`,
+          },
+        });
+      }
+    };
+    scan(FRAGMENT_TXN_RE, 'fragment-transaction');
+    scan(FRAGMENT_KTX_RE, 'fragment-transaction');
+    scan(DIALOG_SHOW_RE, 'dialog-show');
+  }
+  return edges;
+}
+
 // --- seam 3c · compose-state (recomposition) ----------------------------------
 
 /** Reactive containers whose write recomposes any collector (the `.value=`/`.update` family). */

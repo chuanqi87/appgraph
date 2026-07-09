@@ -8,7 +8,10 @@
  *     navigates_to between the two composables' Screen nodes;
  *   - android-intent (startActivity/startService(Intent(_, X::class.java)) → X) →
  *     navigates_to (Activity target) or backed_by (Service target), from the
- *     enclosing screen's owning class.
+ *     enclosing screen's owning class;
+ *   - android-fragment (FragmentTransaction .replace/.add / DialogFragment .show)
+ *     → navigates_to the target Fragment/Dialog Screen (conf 0.8; nav_graph.xml
+ *     manifest edges dedup ahead of it).
  *
  * This is the two-graph payoff: one deterministic derivation, no source double
  * scan. A navigate call one hop behind a screen (a `navigateToX()` helper the
@@ -196,7 +199,7 @@ export function liftNavigatesToFromCore(
     edgeById.set(id, { id, kind, from: from.id, to: to.id, provenance: 'lifted', confidence, attrs: { liftedFrom } });
   };
 
-  for (const e of reader.getSynthesizedEdges(['compose-route', 'android-intent'])) {
+  for (const e of reader.getSynthesizedEdges(['compose-route', 'android-intent', 'android-fragment'])) {
     const src = coreById.get(e.source);
     if (!src) continue;
 
@@ -224,6 +227,18 @@ export function liftNavigatesToFromCore(
       for (const fromScreen of sourceScreensFor(src)) {
         if (isService) emit('backed_by', fromScreen, toNode, 'android-intent', 0.85);
         else emit('navigates_to', fromScreen, toNode, 'android-intent', 0.9);
+      }
+    } else if (e.synthesizedBy === 'android-fragment') {
+      // FragmentTransaction / DialogFragment target → its Screen node. Lower
+      // confidence (0.8) than a manifest Activity intent — a programmatic
+      // fragment swap is a softer nav signal. nav_graph.xml (manifest, conf 1)
+      // dedups ahead of this via makeEdgeId (first write wins in emit()).
+      const targetClass = coreById.get(e.target);
+      if (!targetClass) continue;
+      const toScreen = screenBySymbol.get(targetClass.name);
+      if (!toScreen) continue;
+      for (const fromScreen of sourceScreensFor(src)) {
+        emit('navigates_to', fromScreen, toScreen, 'android-fragment', 0.8);
       }
     }
   }

@@ -118,7 +118,8 @@ async function renderCodeGraphSubgraph(
   };
   showDetail(start);
 
-  renderer.on('clickNode', ({ node }) => showDetail(node));
+  // clickNode is wired by mountSigma (via opts.onNodeClick) — only the
+  // doubleClick-expand (graph mutation) needs its own handler here.
   renderer.on('doubleClickNode', ({ node }) => {
     void api.subgraph({ start: node, mode: 'impact', depth: 1 }).then((more) => {
       for (const n of more.nodes) upsertCgNode(graph, n.id, n.name, n.kind, 4);
@@ -241,7 +242,7 @@ async function renderAppGraphWhole(
   };
   if (focus) showDetail(focus);
 
-  renderer.on('clickNode', ({ node }) => showDetail(node));
+  // clickNode already wired by mountSigma via opts.onNodeClick.
 }
 
 /** The subgraph for an AppGraph view mode. Each mode is a different "story":
