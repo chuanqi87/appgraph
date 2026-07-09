@@ -3,15 +3,11 @@
  *
  * Turns a `NavHost` DSL into `route` nodes + `references` edges route → the
  * destination composable, exactly like the Express/NestJS route→handler
- * precedent. Covers BOTH destination forms in one pass — string routes
- * (`composable("home") { HomeScreen() }`) and type-safe routes
- * (`composable<HomeRoute> { HomeScreen() }`, what nowinandroid uses) — plus
- * `dialog(...)`. Covering only strings would leave every type-safe graph a half
- * bridge, so both are mandatory here.
- *
- * Navigation3 `entry<Route> { }` is intentionally NOT extracted yet — it has no
- * `composable`/`dialog` keyword; when its producers land it plugs in here. It is
- * left silent (no wrong edge) rather than half-covered.
+ * precedent. Covers every destination form in one pass — string routes
+ * (`composable("home") { HomeScreen() }`), type-safe routes
+ * (`composable<HomeRoute> { HomeScreen() }`, what nowinandroid uses), `dialog(...)`,
+ * and Navigation3 `entry<HomeKey> { HomeScreen() }`. Covering only strings would
+ * leave every type-safe / Nav3 graph a half bridge, so all are mandatory here.
  */
 
 import { Node, Language } from '../../types';
@@ -21,7 +17,7 @@ import { stripCommentsForRegex } from '../strip-comments';
 /** Max destination composables linked per route lambda (guards against a god-lambda). */
 const ROUTE_TARGET_CAP = 12;
 
-const DEST_KEYWORD = /\b(composable|dialog)\b/g;
+const DEST_KEYWORD = /\b(composable|dialog|entry)\b/g;
 /** Composable invocations in a route lambda body — composables are PascalCase. */
 const PASCAL_CALL = /\b([A-Z][A-Za-z0-9_]*)\s*\(/g;
 

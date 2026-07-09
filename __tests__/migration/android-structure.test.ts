@@ -140,27 +140,22 @@ describe('S2 · android structure detect', () => {
     }
   });
 
-  it('lifts explicit-intent navigation and startService backing from source', () => {
+  it('no longer scans navigation from source — nav/backed_by are lifted from the core graph', () => {
     const { root, modules, layoutIds } = mkProject();
     try {
       const r = detectAndroidStructure(root, modules, layoutIds);
 
-      const main = r.nodes.find((n) => n.kind === 'Screen' && n.name === 'MainActivity')!;
-      const detail = r.nodes.find((n) => n.kind === 'Screen' && n.name === 'DetailActivity')!;
-      const service = r.nodes.find((n) => n.name === 'SyncService')!;
+      // The manifest Screens/components are still produced here.
+      expect(r.nodes.some((n) => n.kind === 'Screen' && n.name === 'MainActivity')).toBe(true);
+      expect(r.nodes.some((n) => n.kind === 'Screen' && n.name === 'DetailActivity')).toBe(true);
 
-      const nav = r.edges.find((e) => e.kind === 'navigates_to')!;
-      expect(nav.from).toBe(main.id);
-      expect(nav.to).toBe(detail.id);
-      expect(nav.attrs?.via).toBe('explicit-intent');
-      expect(String(nav.attrs?.evidenceFile)).toContain('MainActivity.kt');
-
-      const backed = r.edges.find((e) => e.kind === 'backed_by')!;
-      expect(backed.from).toBe(main.id);
-      expect(backed.to).toBe(service.id);
-
-      expect(r.stats.intentNavEdges).toBe(1);
-      expect(r.stats.backedByEdges).toBe(1);
+      // navigates_to / backed_by are no longer string-scanned here — the intent
+      // flow is lifted from the core android-intent synthesized edges
+      // (lift/navigates-from-core, covered by __tests__/appgraph-navigation-lift.test.ts).
+      expect(r.edges.some((e) => e.kind === 'navigates_to')).toBe(false);
+      expect(r.edges.some((e) => e.kind === 'backed_by')).toBe(false);
+      expect(r.stats.intentNavEdges).toBe(0);
+      expect(r.stats.backedByEdges).toBe(0);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

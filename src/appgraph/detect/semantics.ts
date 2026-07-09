@@ -27,6 +27,7 @@ import { aggregateRolesByModule, detectRoles, RoleResult } from './roles';
 import { detectResources } from './resources';
 import { detectTestContract, TestContractFacts } from './tests';
 import { DetectContext, ReadCode } from './shared';
+import { liftNavigatesToFromCore } from '../lift/navigates-from-core';
 
 export interface SemanticsResult {
   nodes: AppNode[];
@@ -101,12 +102,24 @@ export function buildSemantics(
   const tests = detectTestContract(nodes, readCode, ctx);
   // U6 resources + XML-View layouts (file-driven).
   const resources = detectResources(root, moduleRefs(archModules));
-  // S2 · Android structure: manifest components, intent navigation, layout hosting.
+  // S2 · Android structure: manifest components + convention-discovered Fragment
+  // screens + layout hosting (navigation EDGES are lifted from the core graph below).
   const structure = detectAndroidStructure(
     root,
     moduleRefs(archModules),
     new Set(resources.layoutScreenNodes.map((n) => n.id))
   );
+
+  // Navigation lift FROM the core graph: Screen→Screen navigates_to (compose-route)
+  // and Screen→Screen / Screen→BackgroundComponent (android-intent), over every
+  // Screen + BackgroundComponent the passes above produced. Single deterministic
+  // derivation — replaces the compose + intent source scans.
+  const navTargets: AppNode[] = [
+    ...compose.screenNodes,
+    ...resources.layoutScreenNodes,
+    ...structure.nodes.filter((n) => n.kind === 'Screen' || n.kind === 'BackgroundComponent'),
+  ];
+  const navLift = liftNavigatesToFromCore(reader, navTargets);
 
   const enrichedModules = archModules.map((m) =>
     enrichModule(m, {
@@ -127,7 +140,7 @@ export function buildSemantics(
     ...structure.nodes,
   ];
   const outEdges: AppEdge[] = [
-    ...compose.navEdges,
+    ...navLift.navEdges,
     ...compose.containsEdges,
     ...entities.containsEdges,
     ...di.diEdges,
@@ -152,7 +165,7 @@ export function buildSemantics(
     stats: {
       rolesTagged: roles.byNodeId.size,
       screens: compose.stats.screenCount,
-      navEdges: compose.stats.navEdges,
+      navEdges: navLift.stats.navigatesTo,
       dataModels: entities.dataModelNodes.length,
       diModules: di.stats.moduleCount,
       diWiredEdges: di.stats.wiredEdges,
@@ -164,7 +177,7 @@ export function buildSemantics(
       appEntries: structure.stats.appEntries,
       deeplinks: structure.stats.deeplinks,
       intentNavEdges: structure.stats.intentNavEdges,
-      backedByEdges: structure.stats.backedByEdges,
+      backedByEdges: navLift.stats.backedBy,
       layoutLinks: structure.stats.layoutLinks,
       constantLiterals: constants.stats.literals,
       constantRoutes: constants.stats.routes,

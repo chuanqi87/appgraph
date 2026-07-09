@@ -98,8 +98,8 @@ describe('U1 · roles', () => {
   });
 });
 
-describe('U2 · compose screens + navigation', () => {
-  it('detects *Screen composables and a navigate edge, ignoring toolbars', () => {
+describe('U2 · compose screens', () => {
+  it('detects *Screen composables, ignoring toolbars; navigation is lifted from the core graph', () => {
     const f = buildFixture([
       { kind: 'function', name: 'ForYouScreen', module: 'feature/foryou', code: '@Composable\nfun ForYouScreen(onTopic: () -> Unit) { navigateToTopic() }' },
       { kind: 'function', name: 'TopicScreen', module: 'feature/topic', code: '@Composable\nfun TopicScreen(id: String) {}' },
@@ -108,12 +108,10 @@ describe('U2 · compose screens + navigation', () => {
     const res = detectComposeScreens(f.nodes, f.readCode, f.ctx);
     const names = res.screenNodes.map((n) => n.name).sort();
     expect(names).toEqual(['ForYouScreen', 'TopicScreen']); // toolbar excluded
-    const navByName = res.navEdges.map((e) => {
-      const from = res.screenNodes.find((n) => n.id === e.from)!.name;
-      const to = res.screenNodes.find((n) => n.id === e.to)!.name;
-      return `${from}->${to}`;
-    });
-    expect(navByName).toContain('ForYouScreen->TopicScreen');
+    // Navigation edges are no longer scanned here — they are lifted from the core
+    // compose-route / android-intent synthesized edges (see lift/navigates-from-core,
+    // covered end-to-end by __tests__/appgraph-navigation-lift.test.ts).
+    expect(res.navEdges).toEqual([]);
   });
 });
 

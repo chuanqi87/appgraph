@@ -43,22 +43,26 @@ const SCREEN_NAME_RE = /(Screen|Route|Page)$/;
 // V1 screen-count diff.
 const NAV_PARAM_RE = /:\s*Nav(Host)?Controller\b/;
 
-/** Detect Compose screens and their navigation graph. */
+/**
+ * Detect Compose Screen nodes. Navigation edges are no longer scanned from
+ * source here — they are lifted from the core graph's compose-route /
+ * android-intent synthesized edges by `lift/navigates-from-core.ts` (the
+ * two-graph payoff: one deterministic derivation, no source double scan).
+ */
 export function detectComposeScreens(
   nodes: Node[],
   readCode: ReadCode,
   ctx: DetectContext
 ): ComposeResult {
   const screens = collectScreens(nodes, readCode, ctx);
-  const { navEdges, warnings, unresolved } = buildNavigation(screens, nodes, readCode);
   const containsEdges = buildContains(screens);
 
   return {
     screenNodes: dedupeById(screens.map((s) => s.toNode())).sort((a, b) => a.id.localeCompare(b.id)),
-    navEdges,
+    navEdges: [],
     containsEdges,
-    warnings,
-    stats: { screenCount: countDistinct(screens), navEdges: navEdges.length, unresolvedNav: unresolved },
+    warnings: [],
+    stats: { screenCount: countDistinct(screens), navEdges: 0, unresolvedNav: 0 },
   };
 }
 
@@ -117,113 +121,6 @@ function collectScreens(nodes: Node[], readCode: ReadCode, ctx: DetectContext): 
   return [...byMatchKey.values()];
 }
 
-/** Index screens by full slug AND base slug (name minus the Screen/Route/Page suffix). */
-function screenIndex(screens: Screen[]): Map<string, string> {
-  const idx = new Map<string, string>();
-  for (const s of screens) {
-    const full = slugOf(s.name);
-    const base = slugOf(s.name.replace(SCREEN_NAME_RE, ''));
-    if (!idx.has(full)) idx.set(full, s.id);
-    if (base && !idx.has(base)) idx.set(base, s.id);
-  }
-  return idx;
-}
-
-const NAV_TOKEN_RES = [
-  /navigateTo([A-Z]\w*)/g, // type-safe: navigator::navigateToTopic
-  /navigate\s*\(\s*([A-Z]\w*)NavKey/g, // Navigation3: navigate(TopicNavKey())
-  /onNavigateTo([A-Z]\w*)/g, // callback param naming
-  /navigate\s*\(\s*"([\w/]+)"/g, // classic string route
-];
-
-/**
- * Recover navigation edges. A navigation call is attributed to the screen whose
- * source contains it; Navigation3 entry-provider blocks (`entry<XNavKey>{ … }`)
- * are folded in by mapping the block's bound NavKey to the screen it renders.
- */
-function buildNavigation(
-  screens: Screen[],
-  nodes: Node[],
-  readCode: ReadCode
-): { navEdges: AppEdge[]; warnings: CoverageWarning[]; unresolved: number } {
-  const idx = screenIndex(screens);
-  const edgeById = new Map<string, AppEdge>();
-  const warnings: CoverageWarning[] = [];
-  let unresolved = 0;
-
-  const emit = (fromId: string, targetName: string, file: string): void => {
-    const target = idx.get(slugOf(targetName)) ?? idx.get(slugOf(targetName.replace(SCREEN_NAME_RE, '')));
-    if (!target || target === fromId) {
-      if (!target) unresolved++;
-      return;
-    }
-    const id = makeEdgeId('navigates_to', fromId, target);
-    if (!edgeById.has(id)) {
-      edgeById.set(id, {
-        id,
-        kind: 'navigates_to',
-        from: fromId,
-        to: target,
-        provenance: 'source-static',
-        confidence: 0.7,
-        attrs: { via: 'compose-nav', file },
-      });
-    }
-  };
-
-  // (1) Navigation calls inside a screen's own body.
-  for (const s of screens) {
-    for (const name of navTargets(s.code)) emit(s.id, name, s.file);
-  }
-
-  // (2) Navigation3 entry-provider blocks: `entry<XNavKey>{ … XScreen(...) … navigate… }`.
-  const providerFns = [...nodes]
-    .filter((n) => (n.kind === 'function' || n.kind === 'method') && isShippableJvmNode(n))
-    .sort((a, b) => a.id.localeCompare(b.id));
-  for (const node of providerFns) {
-    const code = readCode(node);
-    if (code === null || !/entry\s*</.test(code)) continue;
-    const sanitized = sanitizeKotlin(code);
-    const hostId = hostScreenOf(sanitized, idx);
-    if (!hostId) continue;
-    for (const name of navTargets(code)) emit(hostId, name, node.filePath);
-  }
-
-  if (unresolved > 0) {
-    warnings.push({
-      message: `U2 · ${unresolved} 处导航调用未能解析到已知屏幕(可能是外部/未建屏幕的路由,或未覆盖的导航样式)`,
-    });
-  }
-  return {
-    navEdges: [...edgeById.values()].sort((a, b) => a.id.localeCompare(b.id)),
-    warnings,
-    unresolved,
-  };
-}
-
-/** All navigation target names referenced in a source span. */
-function navTargets(code: string): string[] {
-  const sanitized = sanitizeKotlin(code);
-  const names: string[] = [];
-  for (const re of NAV_TOKEN_RES) {
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(sanitized)) !== null) names.push(m[1]!);
-  }
-  return names;
-}
-
-/** The screen an entry block renders — the first `XScreen(`/`XRoute(` call inside it. */
-function hostScreenOf(sanitized: string, idx: Map<string, string>): string | undefined {
-  const re = /([A-Z]\w*(?:Screen|Route|Page))\s*\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(sanitized)) !== null) {
-    const id = idx.get(slugOf(m[1]!)) ?? idx.get(slugOf(m[1]!.replace(SCREEN_NAME_RE, '')));
-    if (id) return id;
-  }
-  return undefined;
-}
-
 /** ArchModule → Screen containment (attribute each screen to its owning module). */
 function buildContains(screens: Screen[]): AppEdge[] {
   const edgeById = new Map<string, AppEdge>();
@@ -243,10 +140,6 @@ function buildContains(screens: Screen[]): AppEdge[] {
     }
   }
   return [...edgeById.values()].sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function slugOf(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 function dedupeById(nodes: AppNode[]): AppNode[] {

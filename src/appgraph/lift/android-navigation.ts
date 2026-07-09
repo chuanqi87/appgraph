@@ -24,7 +24,6 @@ import {
   AppGraph,
   AppNode,
   CoverageWarning,
-  makeEdgeId,
   makeNodeId,
   screenMatchKey,
 } from '../schema';
@@ -42,7 +41,6 @@ const TEST_SEGMENTS = ['/src/test/', '/src/androidtest/'];
 
 const NAV_CALL_RE = /\b(?:startActivity|startActivityForResult|startActivities)\s*\(/;
 const SERVICE_CALL_RE = /\b(?:startService|startForegroundService|bindService)\s*\(/;
-const CLASS_REF_RE = /([A-Za-z_]\w*)(?:::class\.java|\.class)\b/g;
 
 export interface NavigationLift {
   nodes: AppNode[];
@@ -90,7 +88,6 @@ class LiftContext {
   readonly newNodes: AppNode[] = [];
   readonly edges: AppEdge[] = [];
   readonly warnings: CoverageWarning[] = [];
-  private readonly emitted = new Set<string>();
 
   constructor(private readonly index: ComponentIndex) {}
 
@@ -98,30 +95,17 @@ class LiftContext {
     const className = primaryTypeName(relPath);
     if (!className) return;
     const isScreenFile = /(?:Activity|Fragment|Dialog)$/.test(className);
+    if (!isScreenFile) return;
 
+    // A Fragment/Dialog that issues an explicit intent is a source-discovered
+    // Screen (Fragments/Dialogs never appear in the manifest). The navigation
+    // EDGES it implies are lifted from the core android-intent synthesized edges
+    // (lift/navigates-from-core.ts) — this pass only REGISTERS the screen.
     const lines = source.split('\n');
-    let fromScreen: AppNode | null = null;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!;
-      const isNav = NAV_CALL_RE.test(line);
-      const isService = SERVICE_CALL_RE.test(line);
-      if (!isNav && !isService) continue;
-
-      // Only attribute navigation from a screen context.
-      if (!fromScreen) fromScreen = this.resolveFrom(className, isScreenFile, relPath);
-      if (!fromScreen) continue;
-
-      for (const target of classRefs(line)) {
-        if (isService) {
-          const bg = this.index.component(target);
-          if (bg) this.edge('backed_by', fromScreen, bg, relPath, i + 1, 'start-service');
-        } else {
-          const screen = this.index.screen(target);
-          if (screen && screen.id !== fromScreen.id) {
-            this.edge('navigates_to', fromScreen, screen, relPath, i + 1, 'explicit-intent');
-          }
-        }
+    for (const line of lines) {
+      if (NAV_CALL_RE.test(line) || SERVICE_CALL_RE.test(line)) {
+        this.resolveFrom(className, isScreenFile, relPath);
+        return;
       }
     }
   }
@@ -151,35 +135,6 @@ class LiftContext {
     this.newNodes.push(node);
     return node;
   }
-
-  private edge(
-    kind: 'navigates_to' | 'backed_by',
-    from: AppNode,
-    to: AppNode,
-    file: string,
-    line: number,
-    via: string
-  ): void {
-    const id = makeEdgeId(kind, from.id, to.id);
-    if (this.emitted.has(id)) return;
-    this.emitted.add(id);
-    this.edges.push({
-      id,
-      kind,
-      from: from.id,
-      to: to.id,
-      provenance: 'lifted',
-      confidence: 0.85,
-      attrs: { via, evidenceFile: file, evidenceLine: line },
-    });
-  }
-}
-
-/** All `X::class.java` / `X.class` class names referenced on a line. */
-function classRefs(line: string): string[] {
-  const out: string[] = [];
-  for (const m of line.matchAll(CLASS_REF_RE)) if (m[1]) out.push(m[1]);
-  return out;
 }
 
 /** Kotlin/Java files are named after their primary type — use the filename. */
