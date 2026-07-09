@@ -63,7 +63,13 @@ export function buildCommunityOverlay(
   const edges = reader.getAllEdges();
   const assignment = assignNodesToModules(nodes, moduleDirs);
   const projection = projectFileCoupling(nodes, edges, assignment.fileToModuleDir);
-  const communities = detectCommunities(projection.graph);
+  // P1-4: give detection the file→module map so it can break up cross-module
+  // grab-bags (a cluster spanning many modules with weak cohesion).
+  const moduleOfFile = (f: string): string | undefined => {
+    const dir = projection.fileToModuleDir.get(f);
+    return dir !== undefined ? moduleDirToId.get(dir) : undefined;
+  };
+  const communities = detectCommunities(projection.graph, { moduleOfFile });
 
   // file → community index (for orienting Feature→Feature edges).
   const fileToCommunity = new Map<string, number>();
@@ -118,6 +124,14 @@ export function buildCommunityOverlay(
       aligned++;
     }
 
+    // A cross-module cluster that STILL sprawls wide with weak cohesion after
+    // the P1-4 re-split is a low-trust grouping — flag it and drop a confidence
+    // tier so consumers can down-weight it (the graph keeps it; nothing is lost).
+    const weak = role === 'cross-module' && (moduleSpan.length > WEAK_MODULE_SPAN || c.cohesion < WEAK_COHESION);
+    const confidence = weak
+      ? Math.max(0.2, cohesionConfidence(c.cohesion) - 0.2)
+      : cohesionConfidence(c.cohesion);
+
     const matchKey = `feature:${c.sig}`;
     const id = makeNodeId('android', 'Feature', matchKey);
     featureIdByCommunity.set(c.id, id);
@@ -130,7 +144,7 @@ export function buildCommunityOverlay(
       subtype: role,
       provenance: 'lifted',
       fidelity: 'source-project',
-      confidence: cohesionConfidence(c.cohesion),
+      confidence,
       attrs: {
         size: c.members.length,
         cohesion: round(c.cohesion),
@@ -139,6 +153,7 @@ export function buildCommunityOverlay(
         sig: c.sig,
         moduleSpan,
         members: c.members,
+        ...(weak ? { weak: true } : {}),
       },
     });
 
@@ -200,6 +215,12 @@ function firstDirForModule(moduleId: string, moduleDirToId: Map<string, string>)
   for (const [dir, id] of moduleDirToId) if (id === moduleId) return dir;
   return undefined;
 }
+
+// A cross-module Feature exceeding either bound is a low-trust grab-bag (marked
+// attrs.weak). Matched to the re-split window in detect.ts — anything above it
+// there was already attempted and could not be separated.
+const WEAK_MODULE_SPAN = 6;
+const WEAK_COHESION = 0.15;
 
 /** Confidence tiers from a community's intra-edge density. */
 function cohesionConfidence(cohesion: number): number {

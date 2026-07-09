@@ -632,7 +632,10 @@ export class MigrateToolHandler {
     const lines = [`Feature ${features.length} 个:`];
     for (const f of features.slice(0, MAX_LIST)) {
       const ms = (members.get(f.id) ?? []).sort();
-      lines.push(`  · ${f.name}${ms.length ? `: ${ms.join(', ')}` : ''}`);
+      // A weak (low-trust) cross-module grab-bag is flagged so the agent knows
+      // not to treat it as one coherent feature.
+      const weak = f.attrs?.weak === true ? ' ⚠低置信(跨模块杂合,勿当作单一功能)' : '';
+      lines.push(`  · ${f.name}${weak}${ms.length ? `: ${ms.join(', ')}` : ''}`);
     }
     if (features.length > MAX_LIST) lines.push(`  … 及另外 ${features.length - MAX_LIST} 个`);
     return text(lines.join('\n'));

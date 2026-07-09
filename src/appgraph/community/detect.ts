@@ -22,6 +22,15 @@ const COHESION_SPLIT_THRESHOLD = 0.05; // re-split communities with cohesion bel
 const COHESION_SPLIT_MIN_SIZE = 50; // only cohesion-split large communities
 const LOUVAIN_SEED = 0x9e3779b9; // fixed seed → reproducible partitions
 
+// P1-4 · module-span-aware re-split (needs the module map, so it is gated on
+// `moduleOfFile`). A community sprawling across many modules with weak cohesion
+// is almost always hub-bridged unrelated subsystems (the nowinandroid "NiaApp"
+// 14-module grab-bag) rather than one feature. These fire on a SMALL span/
+// cohesion window on purpose — the size/cohesion passes above already caught the
+// large dense cases; this only targets the wide-but-thin cluster they miss.
+const MODULE_SPAN_SPLIT = 6; // >6 distinct modules in one community
+const MODULE_SPAN_COHESION = 0.15; // and cohesion below this → re-split
+
 export interface Community {
   /** 0-based, largest-first (total order via sorted-members tiebreak). */
   id: number;
@@ -35,8 +44,17 @@ export interface Community {
   sig: string;
 }
 
+export interface DetectOptions {
+  /**
+   * file path → owning module id (any stable key). When provided, enables the
+   * P1-4 module-span-aware re-split of cross-module grab-bags. Omitting it keeps
+   * detection module-agnostic (the pre-P1-4 behaviour).
+   */
+  moduleOfFile?: (file: string) => string | undefined;
+}
+
 /** Detect communities. Returns [] for an empty graph. */
-export function detectCommunities(graph: Graph): Community[] {
+export function detectCommunities(graph: Graph, opts: DetectOptions = {}): Community[] {
   if (graph.order === 0) return [];
 
   const raw = partitionToCommunities(graph, 1.0);
@@ -60,6 +78,25 @@ export function detectCommunities(graph: Graph): Community[] {
     }
   }
   communities = second;
+
+  // P1-4: break up cross-module grab-bags the size/cohesion passes miss — a
+  // community spanning >6 modules with cohesion <0.15 is unrelated subsystems
+  // glued by a hub, not one feature. Only re-split when the split actually
+  // separates it into >1 part (otherwise the cluster is genuinely coupled).
+  if (opts.moduleOfFile) {
+    const spanOf = (members: string[]): number =>
+      new Set(members.map(opts.moduleOfFile!).filter((m): m is string => m !== undefined)).size;
+    const third: string[][] = [];
+    for (const members of communities) {
+      if (spanOf(members) > MODULE_SPAN_SPLIT && cohesion(graph, members) < MODULE_SPAN_COHESION) {
+        const splits = splitCommunity(graph, members);
+        third.push(...(splits.length > 1 ? splits : [members]));
+      } else {
+        third.push(members);
+      }
+    }
+    communities = third;
+  }
 
   // Total order: size desc, then lexical by sorted members → stable ids.
   communities.sort(
