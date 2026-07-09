@@ -28,7 +28,7 @@ import { mergeGraphPart } from '../appgraph/merge';
 
 export { compareNodes, compareEdges } from '../appgraph/merge';
 
-export const MIGRATION_GRAPH_SCHEMA_VERSION = 1;
+export const MIGRATION_GRAPH_SCHEMA_VERSION = 2;
 
 /**
  * One strongly-connected component of the module dependency graph — the atomic
@@ -46,6 +46,14 @@ export interface MigrationUnit {
   order: number;
   /** True when this unit is a nontrivial SCC (a dependency cycle). */
   cyclic: boolean;
+  /**
+   * 0-based parallel wave: Kahn frontier round this unit became ready in. All
+   * units sharing a wave have every dependency in strictly earlier waves, so a
+   * scheduler may run them concurrently. (Absent in schema-v1 documents.)
+   */
+  wave?: number;
+  /** Unit ids this unit directly depends on (must migrate first), sorted. */
+  dependsOn?: string[];
 }
 
 /** Bottom-up migration order over module SCCs (produced by `migrate order`). */

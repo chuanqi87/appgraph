@@ -61,6 +61,14 @@ export interface PlannedUnit {
   /** split only: the member files this sub-unit migrates (sorted). */
   files?: string[];
   symbolCount: number;
+  /**
+   * 0-based parallel wave (longest dependency depth): every unit this one
+   * depends on sits in a strictly earlier wave, so units sharing a wave are
+   * safe to migrate concurrently.
+   */
+  wave: number;
+  /** Ids of the planned units this unit directly depends on (sorted). */
+  dependsOnUnitIds: string[];
 }
 
 export interface UnitPlanningResult {
@@ -125,12 +133,66 @@ export function planUnits(
         cyclic: unit.cyclic,
         moduleIds: unit.moduleIds,
         symbolCount: unit.symbolCount,
+        wave: 0,
+        dependsOnUnitIds: [],
       });
     }
   }
   out.forEach((u, i) => (u.order = i));
+  annotateUnitDependencies(out, graph);
 
   return { units: out, stats: { merged, split, total: out.length } };
+}
+
+/**
+ * Persist the unit-level scheduling structure: direct `dependsOnUnitIds`
+ * (declared module deps projected onto the final units, plus the serial chain
+ * between split slices of the same module — same semantics the MCP
+ * `unitNeighbors` derives on the fly) and the Kahn `wave` (longest dependency
+ * depth). A scheduler can then answer "what can run in parallel" from
+ * plan.json alone, without re-deriving the module graph.
+ */
+function annotateUnitDependencies(units: PlannedUnit[], graph: MigrationGraph): void {
+  const unitIndexesOfModule = new Map<string, number[]>();
+  units.forEach((u, i) =>
+    u.moduleIds.forEach((m) => {
+      const list = unitIndexesOfModule.get(m) ?? [];
+      list.push(i);
+      unitIndexesOfModule.set(m, list);
+    })
+  );
+
+  const depPairs = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.kind !== 'depends_on' || e.provenance !== 'manifest') continue;
+    if (e.attrs?.scope === 'test') continue;
+    for (const from of unitIndexesOfModule.get(e.from) ?? []) {
+      for (const to of unitIndexesOfModule.get(e.to) ?? []) {
+        if (from !== to) depPairs.add(`${from}>${to}`);
+      }
+    }
+  }
+
+  // Deps always sit at earlier orders (orderPlannedUnits emits deps first;
+  // split keeps slices in place), so scanning j < i both finds every edge and
+  // guarantees the persisted structure is a DAG by construction.
+  const waves: number[] = [];
+  for (let i = 0; i < units.length; i++) {
+    const unit = units[i]!;
+    const depIndexes: number[] = [];
+    for (let j = 0; j < i; j++) {
+      const other = units[j]!;
+      const splitSiblings =
+        unit.moduleIds.length === 1 &&
+        other.moduleIds.length === 1 &&
+        unit.moduleIds[0] === other.moduleIds[0];
+      if (splitSiblings || depPairs.has(`${i}>${j}`)) depIndexes.push(j);
+    }
+    const wave = depIndexes.reduce((mx, j) => Math.max(mx, waves[j]! + 1), 0);
+    waves.push(wave);
+    unit.wave = wave;
+    unit.dependsOnUnitIds = depIndexes.map((j) => units[j]!.id).sort();
+  }
 }
 
 // =============================================================================
@@ -417,6 +479,8 @@ function trySplit(
       featureSig: sig,
       files,
       symbolCount: countSymbols(files),
+      wave: 0,
+      dependsOnUnitIds: [],
     });
   }
 
@@ -433,6 +497,8 @@ function trySplit(
       featureSig: 'rest',
       files: rest,
       symbolCount: countSymbols(rest),
+      wave: 0,
+      dependsOnUnitIds: [],
     });
   }
   return subUnits;

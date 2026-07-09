@@ -27,6 +27,9 @@ export interface BriefUnit {
   kind?: 'module' | 'merged' | 'split';
   featureSig?: string;
   files?: string[];
+  /** Parallel wave + direct prerequisite unit ids (plan schema ≥ 4). */
+  wave?: number;
+  dependsOnUnitIds?: string[];
 }
 
 /** How many split-unit member files to list verbatim before eliding. */
@@ -37,7 +40,8 @@ export function renderUnitBrief(
   unit: BriefUnit,
   modules: ModuleBrief[],
   totalUnits: number,
-  contract?: UnitContract
+  contract?: UnitContract,
+  unitRefById?: Map<string, string>
 ): string {
   const lines: string[] = [];
   lines.push(`# 迁移工单 ${unit.order + 1}/${totalUnits} · ${unit.label}`);
@@ -46,6 +50,17 @@ export function renderUnitBrief(
   lines.push('> [静态]=源码静态解析 · [启发]=代码图启发式(参考,需核实)。');
   lines.push('> 顺序为自底向上:本单元的声明依赖都排在更早的单元,应已先行迁移。');
   lines.push('');
+  if (unit.wave !== undefined && unit.dependsOnUnitIds !== undefined) {
+    const refs = unit.dependsOnUnitIds
+      .map((id) => unitRefById?.get(id) ?? id)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    lines.push(
+      refs.length === 0
+        ? `**波次 ${unit.wave}** · 无前置单元,可立即开工(同波次单元可并行迁移)。`
+        : `**波次 ${unit.wave}** · 前置单元:${refs.join('、')} —— 前置全部迁移完成后本单元即可开工;同波次单元可并行。`
+    );
+    lines.push('');
+  }
   if (unit.cyclic) {
     lines.push(`⚠ 本单元是依赖环(SCC):${modules.length} 个模块相互依赖,必须一并迁移。`);
     lines.push('');

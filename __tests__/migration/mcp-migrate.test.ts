@@ -211,13 +211,14 @@ function textOf(r: ToolResult): string {
 // --- tool handler -------------------------------------------------------------
 
 describe('migrate MCP · tools', () => {
-  it('exposes exactly the 8 tools, each with an object schema', () => {
+  it('exposes exactly the 9 tools, each with an object schema', () => {
     expect(MIGRATE_TOOLS.map((t) => t.name)).toEqual([
       'migrate_order',
       'migrate_unit',
       'migrate_module_facts',
       'migrate_verify_gaps',
       'migrate_ledger',
+      'migrate_ready',
       'app_screens',
       'app_nav',
       'app_features',
@@ -397,7 +398,7 @@ describe('migrate MCP · server routing', () => {
 
     await t.emit({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     const tools = (t.results.get(2) as { tools: Array<{ name: string }> }).tools;
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
 
     await t.emit({
       jsonrpc: '2.0',

@@ -31,6 +31,7 @@ import { buildMigrationPlan, writeMigrationPlan, MigrationPlan } from './plan';
 import { UnitContract } from './plan/contract';
 import { resolveUnit } from './plan/resolve';
 import { MigrateMcpServer } from './mcp/server';
+import { MigrateToolHandler } from './mcp/tools';
 import { verifyMigration } from './verify/diff';
 import { countStatePatterns, loadTargetSources } from './verify/semantic-scan';
 import { verifyUnit, UnitVerifyReport } from './verify/unit';
@@ -222,6 +223,10 @@ function cmdSemantics(pathArg: string, options: { out?: string }): void {
     console.log(
       `  S2 Intent 导航 ${s.intentNavEdges} 条 · backed_by ${s.backedByEdges} 条` +
         ` · 布局宿主关联 ${s.layoutLinks} 条`
+    );
+    console.log(
+      `  S3 导航图 XML:navigates_to ${s.navGraphXmlEdges} 条 · 新发现屏幕 ${s.navGraphXmlScreens}` +
+        (s.navFrameworks > 0 ? ` · S4 ⚠ 第三方导航框架 ${s.navFrameworks} 个(见覆盖警告)` : '')
     );
     console.log(
       `  U7 语义常量:字面量 ${s.constantLiterals} · 路由 ${s.constantRoutes}` +
@@ -898,6 +903,15 @@ function buildProgram(): Command {
     .option('-o, --out <file>', '迁移图 JSON 路径')
     .action(async (pathArg: string, options: { out?: string }) => {
       await cmdSync(pathArg, options);
+    });
+
+  program
+    .command('ready <path>')
+    .description('列出当前可开工的迁移单元(前置全部完成,按并行波次分组;读 plan.json + 台账)')
+    .action((pathArg: string) => {
+      // Same logic the migrate MCP `migrate_ready` tool serves — one source of truth.
+      const result = new MigrateToolHandler(path.resolve(pathArg)).execute('migrate_ready', {});
+      console.log(result.content.map((c) => c.text).join('\n'));
     });
 
   const ledger = program

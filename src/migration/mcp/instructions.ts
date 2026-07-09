@@ -17,6 +17,8 @@ export const MIGRATE_SERVER_INSTRUCTIONS = `# migrate — Android→HarmonyOS �
 1. **migrate_unit "0"**(或 "scaffold")— 先取应用装配工单:全局路由表、权限/深链(module.json5)、
    EntryAbility 入口。建立全局观后再逐单元迁移。
 2. **migrate_order** — 自底向上的迁移单元顺序(叶子优先)。从第 1 个单元开始。
+   多个迁移 agent 并行时改用 **migrate_ready**:它按并行波次列出「前置已全部完成、
+   可立即开工」的单元;领取即登记 in-progress,完成登记 migrated 后再查即得下一批。
 3. **migrate_unit** — 取一个单元的完整工单:台账状态 + 依赖去向/导出改名 + 验收契约摘要 +
    markdown 原文。参数 unit 可以是序号(如 "3")、单元 id、label 或成员模块名。
 4. **migrate_module_facts** — 需要某个依赖模块的完整事实时查询(屏幕/导航、字段 schema、

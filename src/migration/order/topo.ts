@@ -95,8 +95,11 @@ export function computeMigrationOrder(
       .map(([i]) => i)
       .sort((a, b) => label(a).localeCompare(label(b)));
 
+  const idOf = (i: number): string => unitId([...sccs[i]!].sort());
+
   const units: MigrationUnit[] = [];
   let orderIndex = 0;
+  let wave = 0;
   const emitted = new Set<number>();
   let frontier = ready();
   while (frontier.length > 0) {
@@ -111,11 +114,14 @@ export function computeMigrationOrder(
         label: label(i),
         order: orderIndex++,
         cyclic: members.length > 1,
+        wave,
+        dependsOn: [...succ.get(i)!].map(idOf).sort(),
       });
       for (const p of pred.get(i)!) {
         if (!emitted.has(p)) outstanding.set(p, (outstanding.get(p) ?? 1) - 1);
       }
     }
+    wave++;
     frontier = ready();
   }
 

@@ -18,6 +18,8 @@ import { Node } from '../../types';
 import { CodeSymbolGraph } from '../graph-reader';
 import { ModuleRef } from './manifest-capabilities';
 import { detectAndroidStructure } from './android-structure';
+import { detectNavigationXml } from './android-navigation-xml';
+import { detectNavFrameworks } from './nav-frameworks';
 import { detectComposeScreens } from './compose';
 import { detectConstants, ConstantsFacts } from './constants';
 import { detectDi, DiFacts } from './di';
@@ -53,6 +55,11 @@ export interface SemanticsResult {
     intentNavEdges: number;
     backedByEdges: number;
     layoutLinks: number;
+    /** S3 · declared nav-graph XML navigation (conf 1). */
+    navGraphXmlEdges: number;
+    navGraphXmlScreens: number;
+    /** S4 · third-party nav frameworks fingerprinted (each is a declared blind spot). */
+    navFrameworks: number;
     /** U7 · semantic constants (L3 migration-invariant literals). */
     constantLiterals: number;
     constantRoutes: number;
@@ -110,6 +117,15 @@ export function buildSemantics(
     new Set(resources.layoutScreenNodes.map((n) => n.id))
   );
 
+  // S3 · declared nav-graph XML navigation (Jetpack Navigation). Runs over the
+  // Screen index the passes above built so destinations reuse existing nodes;
+  // its edges are manifest-grade (conf 1) — the richest source in Fragment apps.
+  const navXml = detectNavigationXml(root, moduleRefs(archModules), [
+    ...compose.screenNodes,
+    ...resources.layoutScreenNodes,
+    ...structure.nodes.filter((n) => n.kind === 'Screen'),
+  ]);
+
   // Navigation lift FROM the core graph: Screen→Screen navigates_to (compose-route)
   // and Screen→Screen / Screen→BackgroundComponent (android-intent), over every
   // Screen + BackgroundComponent the passes above produced. Single deterministic
@@ -118,8 +134,13 @@ export function buildSemantics(
     ...compose.screenNodes,
     ...resources.layoutScreenNodes,
     ...structure.nodes.filter((n) => n.kind === 'Screen' || n.kind === 'BackgroundComponent'),
+    ...navXml.screenNodes,
   ];
   const navLift = liftNavigatesToFromCore(reader, navTargets);
+
+  // S4 · third-party navigation frameworks: fingerprint → explicit blind-spot
+  // warning (an under-detected screen/nav graph must never read as complete).
+  const navFrameworks = detectNavFrameworks(nodes);
 
   // Anti-silence guard: a screenful app with an empty/near-empty navigation graph
   // is a coverage failure the agent must SEE, not a plausible-looking "no nav".
@@ -128,7 +149,8 @@ export function buildSemantics(
   // produced navigates_to=0 while everything else looked healthy.)
   const navWarnings: CoverageWarning[] = [];
   const screenCount = navTargets.filter((n) => n.kind === 'Screen').length;
-  if (screenCount >= 5 && navLift.stats.navigatesTo === 0) {
+  const totalNavEdges = navLift.stats.navigatesTo + navXml.stats.navEdges;
+  if (screenCount >= 5 && totalNavEdges === 0) {
     const synthCount = reader.getSynthesizedEdges(['compose-route', 'android-intent']).length;
     navWarnings.push({
       message:
@@ -139,10 +161,10 @@ export function buildSemantics(
           : `识别出 ${screenCount} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
             `导航图为空，页面迁移关系不可依赖`,
     });
-  } else if (screenCount >= 20 && navLift.stats.navigatesTo < screenCount * 0.05) {
+  } else if (screenCount >= 20 && totalNavEdges < screenCount * 0.05) {
     navWarnings.push({
       message:
-        `识别出 ${screenCount} 个 Screen 但只提升出 ${navLift.stats.navigatesTo} 条 navigates_to——` +
+        `识别出 ${screenCount} 个 Screen 但只有 ${totalNavEdges} 条 navigates_to——` +
         `导航覆盖异常稀疏（该应用的导航机制可能未被合成器覆盖，页面迁移关系不完整）`,
     });
   }
@@ -164,6 +186,7 @@ export function buildSemantics(
     ...resources.resourceNodes,
     ...resources.layoutScreenNodes,
     ...structure.nodes,
+    ...navXml.screenNodes,
   ];
   const outEdges: AppEdge[] = [
     ...navLift.navEdges,
@@ -172,6 +195,7 @@ export function buildSemantics(
     ...di.diEdges,
     ...resources.containsEdges,
     ...structure.edges,
+    ...navXml.edges,
   ];
   const warnings: CoverageWarning[] = [
     ...compose.warnings,
@@ -181,6 +205,8 @@ export function buildSemantics(
     ...constants.warnings,
     ...resources.warnings,
     ...structure.warnings,
+    ...navXml.warnings,
+    ...navFrameworks.warnings,
     ...navWarnings,
   ];
 
@@ -206,6 +232,9 @@ export function buildSemantics(
       intentNavEdges: structure.stats.intentNavEdges,
       backedByEdges: navLift.stats.backedBy,
       layoutLinks: structure.stats.layoutLinks,
+      navGraphXmlEdges: navXml.stats.navEdges,
+      navGraphXmlScreens: navXml.stats.newScreens,
+      navFrameworks: navFrameworks.frameworks.length,
       constantLiterals: constants.stats.literals,
       constantRoutes: constants.stats.routes,
       constantQueries: constants.stats.queries,

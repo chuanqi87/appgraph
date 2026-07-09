@@ -136,6 +136,12 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
     },
   },
   {
+    name: 'migrate_ready',
+    description:
+      '当前可开工的迁移单元,按并行波次分组:前置单元已全部 migrated/verified 且自身未开工的单元。多个转换 Agent 并行时用它取下一批可派发工单;完成单元用 “migrate ledger set … --status migrated” 登记后再查即得下一批。',
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
+  },
+  {
     name: 'app_screens',
     description:
       '应用屏幕清单:每个 Screen 的名称/类型(activity|fragment|compose|xml-layout…)及其 navigates_to 跳转目标。源工程的产品结构总览。',
@@ -191,6 +197,8 @@ export class MigrateToolHandler {
         );
       case 'migrate_ledger':
         return this.ledger(root, typeof args.unit === 'string' ? args.unit : undefined);
+      case 'migrate_ready':
+        return this.ready(root);
       case 'app_screens':
         return this.appScreens(root);
       case 'app_nav':
@@ -492,6 +500,77 @@ export class MigrateToolHandler {
     return text(lines.join('\n'));
   }
 
+  // --- migrate_ready -----------------------------------------------------------
+
+  /**
+   * Scheduler-facing readiness view: units whose prerequisites are all
+   * migrated/verified and that haven't started, grouped by parallel wave.
+   * Everything derives from plan.json (schema ≥ 4) + ledger.json — no graph
+   * re-derivation, so an external orchestrator sees exactly what the plan says.
+   */
+  private ready(root: string): ToolResult {
+    const loaded = this.planOrGuidance(root);
+    if ('guidance' in loaded) return loaded.guidance;
+    const { plan } = loaded;
+
+    if (plan.units.some((u) => !Array.isArray(u.dependsOnUnitIds))) {
+      return text(
+        'plan.json 是旧版(schema<4),没有持久化的单元依赖/波次字段。请重新运行 “migrate plan <源工程根>” 后再查询可开工单元。'
+      );
+    }
+
+    const led = readLedger(getLedgerPath(root));
+    const statusOf = (id: string): string => led?.units[id]?.status ?? 'pending';
+    const done = (id: string): boolean => {
+      const s = statusOf(id);
+      return s === 'migrated' || s === 'verified';
+    };
+
+    const ready: UnitPlan[] = [];
+    const inProgress: UnitPlan[] = [];
+    const blocked: UnitPlan[] = [];
+    let doneCount = 0;
+    for (const u of plan.units) {
+      const s = statusOf(u.id);
+      if (s === 'migrated' || s === 'verified') doneCount++;
+      else if (s === 'in-progress') inProgress.push(u);
+      else if (s === 'blocked') blocked.push(u);
+      else if (u.dependsOnUnitIds.every(done)) ready.push(u);
+    }
+
+    const refs = (us: UnitPlan[]): string => us.map((u) => `${u.order + 1}. ${u.label}`).join(' · ');
+    const lines: string[] = [`# 可开工单元 · 进度 ${doneCount}/${plan.totalUnits}`];
+    if (ready.length === 0) {
+      lines.push(
+        doneCount >= plan.totalUnits
+          ? '全部单元已迁移完成 ✓(可运行 migrate verify 做全量核对)'
+          : inProgress.length > 0
+            ? '当前无新的可开工单元 — 等待进行中的单元完成登记(migrate ledger set <单元> --status migrated)后再查询。'
+            : '无可开工单元。用 migrate_ledger 检查台账 — 可能有 blocked 单元卡住了后继。'
+      );
+    } else {
+      const byWave = new Map<number, UnitPlan[]>();
+      for (const u of ready) {
+        const w = u.wave ?? 0;
+        (byWave.get(w) ?? byWave.set(w, []).get(w)!).push(u);
+      }
+      for (const wave of [...byWave.keys()].sort((a, b) => a - b)) {
+        const us = byWave.get(wave)!;
+        lines.push('', `## 波次 ${wave}(${us.length} 个,相互无依赖,可并行迁移)`);
+        for (const u of us) {
+          lines.push(
+            `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount} → ${u.briefFile}`
+          );
+        }
+      }
+      lines.push('', '领取单元先登记 in-progress,完成后登记 migrated,再查本工具取下一批:');
+      lines.push('migrate ledger set <源工程> "<单元>" --status in-progress|migrated');
+    }
+    if (inProgress.length > 0) lines.push('', `进行中(${inProgress.length}):${refs(inProgress)}`);
+    if (blocked.length > 0) lines.push('', `⚠ blocked(${blocked.length}):${refs(blocked)}`);
+    return text(lines.join('\n'));
+  }
+
   // --- app-semantic views (read the migration graph's app layer) -------------
 
   private appScreens(root: string): ToolResult {
@@ -647,6 +726,25 @@ function unitNeighbors(
   unit: UnitPlan,
   graph: MigrationGraph | null
 ): { prerequisites: string[]; dependents: string[] } {
+  // Plan schema ≥ 4 persists the unit-level projection — read it verbatim so
+  // the answer always matches plan.json (the on-the-fly derivation below stays
+  // as the fallback for pre-v4 plan documents).
+  if (plan.units.every((u) => Array.isArray(u.dependsOnUnitIds))) {
+    const byId = new Map(plan.units.map((u) => [u.id, u]));
+    const ref = (u: UnitPlan): string => `${u.order + 1}. ${u.label}`;
+    return {
+      prerequisites: unit.dependsOnUnitIds
+        .map((id) => byId.get(id))
+        .filter((u): u is UnitPlan => u !== undefined)
+        .sort((a, b) => a.order - b.order)
+        .map(ref),
+      dependents: plan.units
+        .filter((u) => u.id !== unit.id && u.dependsOnUnitIds.includes(unit.id))
+        .sort((a, b) => a.order - b.order)
+        .map(ref),
+    };
+  }
+
   const deps = new Set<string>(); // module id → depends on module id
   if (graph) {
     for (const e of graph.edges) {

@@ -36,7 +36,7 @@ import {
   planUnits,
 } from './unit-planning';
 
-export const MIGRATION_PLAN_SCHEMA_VERSION = 3;
+export const MIGRATION_PLAN_SCHEMA_VERSION = 4;
 
 /** One migration unit with its member-module briefs and rendered work order. */
 export interface UnitPlan {
@@ -52,6 +52,10 @@ export interface UnitPlan {
   /** split only: the member files this sub-unit migrates. */
   files?: string[];
   symbolCount: number;
+  /** 0-based parallel wave — deps sit in strictly earlier waves (schema ≥ 4). */
+  wave: number;
+  /** Ids of the units this unit directly depends on, sorted (schema ≥ 4). */
+  dependsOnUnitIds: string[];
   /** Plan-dir-relative path of the rendered markdown brief. */
   briefFile: string;
   /** Plan-dir-relative path of the machine-readable acceptance contract. */
@@ -131,6 +135,8 @@ export function buildMigrationPlan(
       featureSig: unit.featureSig,
       files: unit.files,
       symbolCount: unit.symbolCount,
+      wave: unit.wave,
+      dependsOnUnitIds: unit.dependsOnUnitIds,
       briefFile: `units/${base}.md`,
       contractFile: `contracts/${base}.json`,
       modules,
@@ -200,9 +206,10 @@ export function writeMigrationPlan(
   mkdirSync(join(planDir, 'contracts'), { recursive: true });
 
   writeFileSync(join(planDir, 'plan.json'), canonicalJson(plan) + '\n', 'utf8');
+  const unitRefById = new Map(plan.units.map((u) => [u.id, `${u.order + 1}. ${u.label}`]));
   for (const unit of plan.units) {
     const contract = contracts.get(unit.id);
-    const md = renderUnitBrief(unit, unit.modules, plan.totalUnits, contract);
+    const md = renderUnitBrief(unit, unit.modules, plan.totalUnits, contract, unitRefById);
     writeFileSync(join(planDir, unit.briefFile), md + '\n', 'utf8');
     if (contract) {
       writeFileSync(join(planDir, unit.contractFile), canonicalJson(contract) + '\n', 'utf8');
