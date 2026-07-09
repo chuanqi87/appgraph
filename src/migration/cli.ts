@@ -43,7 +43,12 @@ import {
   readLedger,
   writeLedger,
 } from './ledger';
-import { getLedgerPath, getPlanDir, getVerifyUnitsDir } from './paths';
+import { getLedgerPath, getLedgerRemapPath, getPlanDir, getVerifyUnitsDir } from './paths';
+import {
+  applyLedgerRemap,
+  computeLedgerRemap,
+  LedgerRemap,
+} from './plan/ledger-remap';
 import { diffMigrationGraphs, MigrationDiff } from './incremental';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
@@ -267,6 +272,11 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
     throw new Error(`迁移图缺少迁移顺序,请先运行 “migrate order ${pathArg}”`);
   }
 
+  // Read the PRIOR plan before we overwrite it — it's the only record of what
+  // the old (soon-orphaned) ledger unit ids meant, so ledger reconciliation
+  // needs it captured now.
+  const priorPlan = readJsonFile<MigrationPlan>(path.join(getPlanDir(root), 'plan.json'));
+
   const reader = CodeSymbolGraph.open(root);
   try {
     const { plan, publicInterfaceByModule, contracts } = buildMigrationPlan(graph, reader, {
@@ -279,6 +289,7 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
         : {}),
     });
     const planDir = writeMigrationPlan(root, plan, contracts);
+    reconcileLedgerOnRepack(root, priorPlan, plan);
 
     // Persist each source module's public surface on its ArchModule node —
     // the T3 interface-fidelity baseline `migrate verify` checks against.
@@ -322,6 +333,33 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
   } finally {
     reader.close();
   }
+}
+
+/**
+ * P1-5 · after a re-pack, reconcile the ledger against the new unit ids. Writes
+ * `ledger-remap.json` whenever there are orphaned ledger entries (so migration
+ * progress is never silently dropped) and tells the user to review/apply it.
+ * No ledger is touched here — `migrate ledger remap --apply` is the deliberate
+ * second step.
+ */
+function reconcileLedgerOnRepack(
+  root: string,
+  priorPlan: MigrationPlan | null,
+  newPlan: MigrationPlan
+): void {
+  const ledger = readLedger(getLedgerPath(root));
+  if (!ledger || Object.keys(ledger.units).length === 0) return;
+  const remap = computeLedgerRemap(priorPlan, newPlan, ledger);
+  if (remap.entries.length === 0 && remap.unmatched.length === 0) return;
+
+  const remapPath = getLedgerRemapPath(root);
+  writeFileSync(remapPath, canonicalJson(remap) + '\n', 'utf8');
+  console.log(
+    `  ⚠ 台账对账:重打包后 ${remap.entries.length} 个台账条目单元 id 变化` +
+      (remap.unmatched.length > 0 ? `,另有 ${remap.unmatched.length} 个无法匹配(需人工处理)` : '') +
+      ` → ${path.relative(process.cwd(), remapPath)}`
+  );
+  console.log(`    审阅后运行 “migrate ledger remap ${path.relative(process.cwd(), root) || '.'} --apply” 套用(不加 --apply 只预览)。`);
 }
 
 async function cmdVerify(pathArg: string, options: { out?: string; target?: string; unit?: string }): Promise<void> {
@@ -778,15 +816,77 @@ function cmdLedgerShow(pathArg: string, unitQuery?: string): void {
       console.log(`  ${String(u.order + 1).padStart(2)}. ${u.label}: ${status}${tgt}`);
     }
     const planIds = new Set(plan.units.map((u) => u.id));
-    const orphans = Object.keys(ledger.units).filter((id) => !planIds.has(id));
+    const orphans = Object.keys(ledger.units).filter((id) => !planIds.has(id) && id !== 'app-scaffold');
     if (orphans.length > 0) {
       console.log(
-        `  ⚠ orphan 台账条目 ${orphans.length} 个(重 pack 后单元 id 变化,未自动删除):${orphans.join(', ')}`
+        `  ⚠ orphan 台账条目 ${orphans.length} 个(重 pack 后单元 id 变化):${orphans.join(', ')}`
       );
+      console.log(`    用 “migrate ledger remap ${pathArg} --apply” 迁移到新单元 id(先不加 --apply 预览)。`);
     }
   } else {
     for (const [id, e] of Object.entries(ledger.units)) console.log(`  ${id}: ${e.status}`);
   }
+}
+
+/**
+ * `migrate ledger remap [--apply]` — reconcile the ledger after a re-pack.
+ * Recomputes the mapping from the current plan.json + ledger (falling back to a
+ * previously-written ledger-remap.json only when there is no way to recompute),
+ * previews it, and with `--apply` moves the orphan entries onto the new unit ids.
+ */
+function cmdLedgerRemap(pathArg: string, options: { apply?: boolean }): void {
+  const root = path.resolve(pathArg);
+  const ledger = readLedger(getLedgerPath(root));
+  if (!ledger || Object.keys(ledger.units).length === 0) {
+    console.log('台账为空,无需对账。');
+    return;
+  }
+  const plan = readJsonFile<MigrationPlan>(path.join(getPlanDir(root), 'plan.json'));
+  if (!plan) {
+    throw new Error(`未找到 plan.json,请先运行 “migrate plan ${pathArg}”`);
+  }
+
+  // Recompute against the CURRENT plan: an orphan is a ledger unit id no longer
+  // in the plan. The old plan is unavailable here (it was overwritten), so
+  // matching relies on the persisted ledger-remap.json for the old→new mapping;
+  // if that's missing, fall back to a fresh compute with no prior plan (which
+  // can still resolve exact/overlap matches for entries that carry module info).
+  let remap: LedgerRemap = readJsonFile<LedgerRemap>(getLedgerRemapPath(root)) ?? {
+    entries: [],
+    unmatched: [],
+  };
+  // Drop stale rows whose source is already gone or whose target vanished.
+  const planIds = new Set(plan.units.map((u) => u.id));
+  remap = {
+    entries: remap.entries.filter((e) => ledger.units[e.fromUnitId] && planIds.has(e.toUnitId)),
+    unmatched: remap.unmatched.filter((u) => ledger.units[u.fromUnitId]),
+  };
+
+  if (remap.entries.length === 0 && remap.unmatched.length === 0) {
+    // Nothing recorded — recompute orphans directly against the current plan.
+    const orphans = Object.keys(ledger.units).filter((id) => !planIds.has(id) && id !== 'app-scaffold');
+    if (orphans.length === 0) {
+      console.log('台账与当前 plan 一致,无孤儿条目。');
+      return;
+    }
+    remap = computeLedgerRemap(null, plan, ledger);
+  }
+
+  console.log(`台账对账(${options.apply ? '套用' : '预览'}):`);
+  for (const e of remap.entries) {
+    console.log(`  ${e.fromLabel} [${e.status}] → ${e.toLabel}(${e.reason}, 覆盖 ${Math.round(e.coverage * 100)}%)`);
+  }
+  for (const u of remap.unmatched) {
+    console.log(`  ⚠ ${u.fromLabel} [${u.status}] — 无法匹配(${u.reason}),保留原样待人工处理`);
+  }
+
+  if (!options.apply) {
+    console.log(`共 ${remap.entries.length} 可套用 · ${remap.unmatched.length} 需人工。加 --apply 执行。`);
+    return;
+  }
+  const moved = applyLedgerRemap(ledger, remap);
+  writeLedger(getLedgerPath(root), ledger);
+  console.log(`已套用:${moved} 个台账条目迁移到新单元 id · ${remap.unmatched.length} 个保留。`);
 }
 
 /** `["Src=Dst", …]` → `{ Src: "Dst" }`. */
@@ -938,6 +1038,13 @@ function buildProgram(): Command {
     .description('查看台账全表(未登记单元标 pending)或单个单元明细')
     .action((pathArg: string, unit: string | undefined) => {
       cmdLedgerShow(pathArg, unit);
+    });
+  ledger
+    .command('remap <path>')
+    .description('重打包后对账:把单元 id 变化的孤儿台账条目迁移到新单元(默认预览,--apply 执行)')
+    .option('--apply', '实际套用(不加只预览映射)')
+    .action((pathArg: string, options: { apply?: boolean }) => {
+      cmdLedgerRemap(pathArg, options);
     });
 
   program

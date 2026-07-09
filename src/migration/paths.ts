@@ -25,3 +25,9 @@ export function getLedgerPath(projectRoot: string): string {
 export function getVerifyUnitsDir(projectRoot: string): string {
   return join(getMigrationDir(projectRoot), 'verify', 'units');
 }
+
+/** Ledger reconciliation map written by `migrate plan` when re-packing orphaned
+ *  ledger units — consumed by `migrate ledger remap --apply`. */
+export function getLedgerRemapPath(projectRoot: string): string {
+  return join(getMigrationDir(projectRoot), 'ledger-remap.json');
+}

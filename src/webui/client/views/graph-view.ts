@@ -3,24 +3,28 @@ import Sigma from 'sigma';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import louvain from 'graphology-communities-louvain';
 import { api } from '../api';
-import { badge, el, empty, errorBox, link, mount, spinner } from '../render';
+import { buildAppGraphModel, type AppGraphModel } from '../appgraph-model';
+import { badge, chip, el, empty, errorBox, link, mount, spinner } from '../render';
 import { renderNodeDetail } from './codegraph-node-detail';
 import { renderAppNodeDetail } from './appgraph-node-detail';
+import { APP_EDGE_STYLES, APP_NODE_STYLES, edgeStyle, nodeColor, nodeSize } from '../visual';
 import type { Edge as CgEdge } from '../../../types';
-import type { AppEdgeWire } from '../../wire-types';
+import type { AppEdgeWire, AppNodeWire } from '../../wire-types';
 
 export interface GraphViewOptions {
   source: 'codegraph' | 'appgraph';
   query: URLSearchParams;
 }
 
+type AppViewMode = 'module' | 'screen-flow' | 'feature' | 'capability' | 'all';
 type ColorMode = 'kind' | 'community';
 
-/** Force-directed canvas — a local subgraph for CodeGraph (bounded, expandable
- *  by double-clicking a node), or the whole document for AppGraph (small
- *  enough to render in full). Clicking a node opens the SAME detail panel
- *  used by the table views — one field-rendering implementation, two entry
- *  points. */
+/** Force-directed canvas. For CodeGraph: a bounded local subgraph around a
+ *  start symbol (expandable by double-click). For AppGraph: the whole
+ *  document, sliced into one of several "story" subgraphs (module deps, screen
+ *  flow, feature map, capability layer) so the same data tells different
+ *  stories. Clicking a node opens the SAME detail panel the table views use
+ *  and highlights its 1-hop neighborhood; the legend explains every color/edge. */
 export async function renderGraphView(container: HTMLElement, opts: GraphViewOptions): Promise<void> {
   const layout = el('div', { class: 'graph-layout' }, [
     el('div', { class: 'graph-toolbar' }, ['Loading…']),
@@ -64,27 +68,29 @@ async function renderCodeGraphSubgraph(
   const data = await api.subgraph({ start, mode, depth });
 
   const graph = new Graph();
-  for (const n of data.nodes) upsertNode(graph, n.id, n.name, n.kind, n.id === start ? 8 : 4);
-  addEdges(graph, data.edges);
+  for (const n of data.nodes) upsertCgNode(graph, n.id, n.name, n.kind, n.id === start ? 8 : 4);
+  addCgEdges(graph, data.edges);
 
   let colorMode: ColorMode = 'kind';
-  let renderer: Sigma | undefined;
+  let focus: string | null = start;
   const legendEl = el('span', { class: 'field-label' }, []);
   const recolor = (): void => {
     applyColorMode(graph, colorMode, legendEl);
     layoutGraph(graph);
+    refreshFocus();
     renderer?.refresh();
     void renderer?.getCamera().animatedReset();
   };
+  let renderer = mountSigma(graph, canvasHost, { focus: null, onNodeClick: (id) => showDetail(id) });
+  const refreshFocus = (): void => renderer?.setSetting('nodeReducer', focusReducer(graph, focus));
   recolor();
-  renderer = mountSigma(graph, canvasHost);
 
   mount(
     toolbar,
     link('← New search', '#/codegraph/graph'),
     ` · ${data.nodes.length} nodes · ${data.edges.length} edges`,
     data.truncated ? ' · ' : null,
-    data.truncated ? el('span', { class: 'badge' }, ['truncated — showing a capped subset']) : null,
+    data.truncated ? el('span', { class: 'badge' }, ['truncated']) : null,
     ' · mode ',
     modeSelect(mode, (next) => navigateCodeGraphGraph(start, next, depth)),
     ' · depth ',
@@ -95,28 +101,28 @@ async function renderCodeGraphSubgraph(
       recolor();
     }),
     legendEl,
-    ' · double-click a node to expand its neighbors · ',
+    ' · double-click a node to expand · ',
     link('browse as table →', '#/codegraph/nodes')
   );
 
-  const showDetail = (id: string): void => void renderNodeDetail(detail, id);
+  const showDetail = (id: string): void => {
+    focus = id;
+    refreshFocus();
+    renderer?.refresh();
+    void renderNodeDetail(detail, id);
+  };
   showDetail(start);
 
   renderer.on('clickNode', ({ node }) => showDetail(node));
   renderer.on('doubleClickNode', ({ node }) => {
     void api.subgraph({ start: node, mode: 'impact', depth: 1 }).then((more) => {
-      for (const n of more.nodes) upsertNode(graph, n.id, n.name, n.kind, 4);
-      addEdges(graph, more.edges);
+      for (const n of more.nodes) upsertCgNode(graph, n.id, n.name, n.kind, 4);
+      addCgEdges(graph, more.edges);
       recolor();
     });
   });
 }
 
-/** Landing state for the CodeGraph graph tab when no `start` node is chosen
- *  yet — a live symbol search that drops straight into that symbol's graph,
- *  so the graph is reachable in one step instead of routing through the
- *  table view first. There's no whole-repo graph by design (see plan): a
- *  real codebase can have tens of thousands of nodes. */
 function renderCodeGraphSearchLanding(toolbar: HTMLElement, canvasHost: HTMLElement, detail: HTMLElement): void {
   mount(toolbar, 'Search for a symbol to explore its graph · ', link('browse as table →', '#/codegraph/nodes'));
 
@@ -169,27 +175,42 @@ async function renderAppGraphWhole(
   detail: HTMLElement
 ): Promise<void> {
   const focus = query.get('focus') ?? undefined;
+  const view = (query.get('view') as AppViewMode) ?? 'module';
   const { graph: appGraph } = await api.appGraph();
+  const model = buildAppGraphModel(appGraph);
 
+  const sub = appSubgraph(model, view);
   const graph = new Graph();
-  for (const n of appGraph.nodes) upsertNode(graph, n.id, n.name, n.kind, n.id === focus ? 8 : 5);
-  addAppEdges(graph, appGraph.edges);
+  for (const n of sub.nodes) {
+    upsertAppNode(graph, model, n, n.id === focus ? 9 : undefined);
+  }
+  addAppEdges(graph, sub.edges);
 
   let colorMode: ColorMode = 'kind';
-  let renderer: Sigma | undefined;
   const legendEl = el('span', { class: 'field-label' }, []);
   const recolor = (): void => {
     applyColorMode(graph, colorMode, legendEl);
     layoutGraph(graph);
+    refreshFocus();
     renderer?.refresh();
     void renderer?.getCamera().animatedReset();
   };
+  const renderer = mountSigma(graph, canvasHost, { focus: focus ?? null, onNodeClick: (id) => showDetail(id) });
+  const refreshFocus = (): void => renderer.setSetting('nodeReducer', focusReducer(graph, focusValue()));
+
+  // `focus` can come from the URL (initial) or change on click; keep a mutable
+  // local so the reducer reflects the latest focus without a re-mount.
+  let currentFocus: string | null = focus ?? null;
+  function focusValue(): string | null {
+    return currentFocus;
+  }
   recolor();
-  renderer = mountSigma(graph, canvasHost);
 
   mount(
     toolbar,
-    `${appGraph.nodes.length} nodes · ${appGraph.edges.length} edges · ${appGraph.app.name} (${appGraph.platform})`,
+    `${sub.nodes.length} nodes · ${sub.edges.length} edges · ${appGraph.app.name} (${appGraph.platform})`,
+    ' · view ',
+    viewModeSelect(view, (next) => navigateAppGraphGraph(next, currentFocus ?? undefined)),
     ' · color by ',
     colorModeSelect(colorMode, (next) => {
       colorMode = next;
@@ -200,10 +221,94 @@ async function renderAppGraphWhole(
     link('browse as table →', '#/appgraph')
   );
 
-  const showDetail = (id: string): void => void renderAppNodeDetail(detail, id);
+  // A persistent legend panel overlaid on the canvas — explains every node
+  // color and edge kind currently in view, since "what does a green edge
+  // mean?" is otherwise opaque.
+  const legendPanel = legendPanelFor(sub);
+  canvasHost.appendChild(legendPanel);
+
+  const showDetail = (id: string): void => {
+    currentFocus = id;
+    refreshFocus();
+    renderer.refresh();
+    void renderAppNodeDetail(detail, id);
+  };
   if (focus) showDetail(focus);
 
   renderer.on('clickNode', ({ node }) => showDetail(node));
+}
+
+/** The subgraph for an AppGraph view mode. Each mode is a different "story":
+ *  module = the architecture (modules + depends_on), screen-flow = the UX
+ *  (screens + nav + backed_by), feature = functional clusters, capability =
+ *  the cross-platform capability layer, all = the whole document. */
+export function appSubgraph(model: AppGraphModel, view: AppViewMode): { nodes: AppNodeWire[]; edges: AppEdgeWire[] } {
+  const g = model.graph;
+  if (view === 'all') return { nodes: g.nodes, edges: g.edges };
+
+  const kindFilter = (n: AppNodeWire): boolean => {
+    switch (view) {
+      case 'module':
+        return n.kind === 'ArchModule';
+      case 'screen-flow':
+        return n.kind === 'Screen' || n.kind === 'AppEntry' || n.kind === 'BackgroundComponent';
+      case 'feature':
+        return n.kind === 'Feature' || n.kind === 'ArchModule';
+      case 'capability':
+        return n.kind === 'Capability' || n.kind === 'Screen' || n.kind === 'BackgroundComponent' || n.kind === 'Permission';
+      default:
+        return true;
+    }
+  };
+  const edgeFilter = (e: AppEdgeWire): boolean => {
+    switch (view) {
+      case 'module':
+        return e.kind === 'depends_on';
+      case 'screen-flow':
+        return e.kind === 'navigates_to' || e.kind === 'backed_by';
+      case 'feature':
+        return e.kind === 'app_contains' || e.kind === 'depends_on';
+      case 'capability':
+        return e.kind === 'uses_capability' || e.kind === 'requires_permission';
+      default:
+        return true;
+    }
+  };
+
+  const nodeIds = new Set(g.nodes.filter(kindFilter).map((n) => n.id));
+  const edges = g.edges.filter((e) => edgeFilter(e) && nodeIds.has(e.from) && nodeIds.has(e.to));
+  // Keep only nodes that survive the edge filter (drop isolated nodes for
+  // screen-flow/capability, where an isolated screen adds noise).
+  const touched = new Set<string>();
+  if (view !== 'module') {
+    for (const e of edges) {
+      touched.add(e.from);
+      touched.add(e.to);
+    }
+  }
+  const nodes = g.nodes.filter((n) => (view === 'module' ? nodeIds.has(n.id) : touched.has(n.id)));
+  return { nodes, edges };
+}
+
+function viewModeSelect(current: AppViewMode, onChange: (v: AppViewMode) => void): HTMLSelectElement {
+  const modes: Array<[AppViewMode, string]> = [
+    ['module', 'Module graph'],
+    ['screen-flow', 'Screen flow'],
+    ['feature', 'Feature map'],
+    ['capability', 'Capability layer'],
+    ['all', 'Everything'],
+  ];
+  return el(
+    'select',
+    { onchange: (e) => onChange((e.target as HTMLSelectElement).value as AppViewMode) },
+    modes.map(([v, label]) => el('option', { value: v, selected: v === current ? '' : undefined }, [label]))
+  );
+}
+
+function navigateAppGraphGraph(view: AppViewMode, focus?: string): void {
+  const params = new URLSearchParams({ view });
+  if (focus) params.set('focus', focus);
+  location.hash = `#/appgraph/graph?${params.toString()}`;
 }
 
 function modeSelect(current: string, onChange: (v: string) => void): HTMLSelectElement {
@@ -239,21 +344,10 @@ function colorModeSelect(current: ColorMode, onChange: (v: ColorMode) => void): 
 
 /**
  * Recolors every node by the chosen mode and writes a short legend into
- * `legendEl`. 'community' runs Louvain (graphology-communities-louvain —
- * the same algorithm AppGraph's own Feature clustering uses server-side,
- * src/appgraph/community/detect.ts) directly on the graph currently on
- * screen — cheap here since the CodeGraph side is always a bounded subgraph
- * (a few hundred nodes at most) and the AppGraph side is small by nature.
- * Re-run this after any graph mutation (double-click expand) so the
- * partition reflects the current node/edge set, not a stale one.
- *
- * Coloring alone doesn't read as "clustered" — same-colored dots scattered
- * across an organic force layout don't visually group. So community mode
- * also RE-SEEDS every node's position around its community's own anchor
- * point (see seedCommunityPositions) before the caller re-runs forceAtlas2;
- * the subsequent layout pass then relaxes within/between those seeded
- * clusters instead of relaxing from a flat random start, which is what
- * actually produces separated blobs.
+ * `legendEl`. 'community' runs Louvain on the graph currently on screen and
+ * RE-SEEDS node positions around community anchors so same-colored nodes
+ * actually group into separated blobs (coloring alone doesn't read as
+ * clustered). Re-run after any graph mutation (double-click expand).
  */
 function applyColorMode(graph: Graph, mode: ColorMode, legendEl: HTMLElement): void {
   if (mode === 'kind') {
@@ -271,16 +365,9 @@ function applyColorMode(graph: Graph, mode: ColorMode, legendEl: HTMLElement): v
   legendEl.textContent = ` · ${result.count} communities · modularity ${result.modularity.toFixed(2)}`;
 }
 
-/** Places each node near its community's anchor on a ring, communities
- *  spaced around the ring in detection order. ForceAtlas2 then relaxes edges
- *  within that seed rather than from scratch, so communities settle as
- *  separated blobs instead of an undifferentiated cloud. */
 function seedCommunityPositions(graph: Graph, communities: Record<string, number>): void {
   const communityIds = [...new Set(Object.values(communities))];
   const angleStep = (2 * Math.PI) / Math.max(1, communityIds.length);
-  // Ring radius grows with community count so more clusters don't overlap;
-  // per-cluster jitter radius grows with that cluster's own member count so
-  // a big community isn't squeezed into the same tiny circle as a singleton.
   const ringRadius = 12 + communityIds.length * 4;
   const memberCounts = new Map<number, number>();
   for (const id of Object.values(communities)) memberCounts.set(id, (memberCounts.get(id) ?? 0) + 1);
@@ -300,7 +387,20 @@ function seedCommunityPositions(graph: Graph, communities: Record<string, number
   });
 }
 
-function upsertNode(graph: Graph, id: string, label: string, kind: string, size: number): void {
+/** Sigma node reducer: when a `focus` node is set, dim + shrink every node
+ *  that isn't the focus or its 1-hop neighbor, so the neighborhood reads as a
+ *  highlighted cluster against a faded backdrop. */
+function focusReducer(graph: Graph, focus: string | null) {
+  if (!focus) return (_node: string, attrs: { color?: string; size?: number }) => attrs;
+  const neighbors = new Set<string>([focus]);
+  graph.forEachNeighbor(focus, (n) => neighbors.add(n));
+  return (_node: string, attrs: { color?: string; size?: number; label?: string }) => {
+    if (neighbors.has(_node)) return attrs;
+    return { ...attrs, color: '#d0d4da', size: (attrs.size ?? 4) * 0.4, label: undefined } as typeof attrs;
+  };
+}
+
+function upsertCgNode(graph: Graph, id: string, label: string, kind: string, size: number): void {
   if (graph.hasNode(id)) {
     graph.mergeNode(id, { label, kind, size });
   } else {
@@ -308,7 +408,23 @@ function upsertNode(graph: Graph, id: string, label: string, kind: string, size:
   }
 }
 
-function addEdges(graph: Graph, edges: CgEdge[]): void {
+function upsertAppNode(graph: Graph, model: AppGraphModel, node: AppNodeWire, sizeOverride?: number): void {
+  const size = sizeOverride ?? nodeSize(node, model);
+  if (graph.hasNode(node.id)) {
+    graph.mergeNode(node.id, { label: node.name, kind: node.kind, size });
+  } else {
+    graph.addNode(node.id, {
+      label: node.name,
+      kind: node.kind,
+      color: nodeColor(node.kind),
+      size,
+      x: Math.random(),
+      y: Math.random(),
+    });
+  }
+}
+
+function addCgEdges(graph: Graph, edges: CgEdge[]): void {
   for (const e of edges) {
     if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
     graph.mergeEdgeWithKey(`${e.source}->${e.target}:${e.kind}`, e.source, e.target, {
@@ -319,32 +435,79 @@ function addEdges(graph: Graph, edges: CgEdge[]): void {
   }
 }
 
+/** AppGraph edges get SEMANTIC color + arrow style per kind (see visual.ts).
+ *  Directed kinds (navigates_to, depends_on, exposes) render as arrows;
+ *  undirected/containment kinds render as plain lines. */
 function addAppEdges(graph: Graph, edges: AppEdgeWire[]): void {
   for (const e of edges) {
     if (!graph.hasNode(e.from) || !graph.hasNode(e.to)) continue;
-    graph.mergeEdgeWithKey(e.id, e.from, e.to, { label: e.kind, size: 1, color: '#94a3b8' });
+    const style = edgeStyle(e.kind);
+    const directed = e.kind === 'navigates_to' || e.kind === 'depends_on' || e.kind === 'exposes';
+    graph.mergeEdgeWithKey(e.id, e.from, e.to, {
+      label: style.label,
+      size: 1,
+      color: style.color,
+      type: directed ? 'arrow' : 'line',
+    });
   }
 }
 
 function layoutGraph(graph: Graph): void {
-  // More iterations than the plain-organic case: community mode seeds nodes
-  // in per-cluster rings first (seedCommunityPositions) and needs the extra
-  // passes to relax edges within/between those rings into clean blobs
-  // instead of stopping mid-settle.
   forceAtlas2.assign(graph, { iterations: 200, settings: forceAtlas2.inferSettings(graph) });
 }
 
-function mountSigma(graph: Graph, container: HTMLElement): Sigma {
+interface MountOptions {
+  focus: string | null;
+  onNodeClick: (id: string) => void;
+}
+
+/** Mounts a Sigma renderer with sensible defaults + lifecycle cleanup, and
+ *  wires the focus reducer so neighborhood highlighting is on from the start. */
+function mountSigma(graph: Graph, container: HTMLElement, opts: MountOptions): Sigma {
   container.replaceChildren();
-  const renderer = new Sigma(graph, container);
-  // Best-effort cleanup: an abandoned renderer keeps a render loop + window
-  // listeners alive after navigating away, since nothing else references it.
+  const renderer = new Sigma(graph, container, {
+    labelDensity: 0.07,
+    labelGridCellSize: 60,
+    labelRenderedSizeThreshold: 6,
+    renderEdgeLabels: false,
+  });
+  renderer.setSetting('nodeReducer', focusReducer(graph, opts.focus));
+  renderer.on('clickNode', ({ node }) => opts.onNodeClick(node));
   const disposeOnNavigate = (): void => {
     renderer.kill();
     window.removeEventListener('hashchange', disposeOnNavigate);
   };
   window.addEventListener('hashchange', disposeOnNavigate, { once: true });
   return renderer;
+}
+
+/** Builds the overlaid legend panel: a compact grid of the node kinds and
+ *  edge kinds currently in the subgraph, so the colors are self-documenting. */
+function legendPanelFor(sub: { nodes: AppNodeWire[]; edges: AppEdgeWire[] }): HTMLElement {
+  const kinds = [...new Set(sub.nodes.map((n) => n.kind))].sort();
+  const edgeKinds = [...new Set(sub.edges.map((e) => e.kind))].sort();
+
+  const swatch = (color: string, dash: 'solid' | 'dashed' | 'dotted', label: string): HTMLElement =>
+    el('div', { class: 'legend-item' }, [
+      el('span', { class: `legend-swatch legend-swatch-${dash}`, style: `--swatch-color:${color}` }),
+      el('span', { class: 'legend-label' }, [label]),
+    ]);
+
+  return el('div', { class: 'graph-legend' }, [
+    el('div', { class: 'legend-group' }, [
+      el('div', { class: 'legend-title' }, ['Nodes']),
+      ...kinds.map((k) => swatch(nodeColor(k), 'solid', APP_NODE_STYLES[k]?.label ?? k)),
+    ]),
+    edgeKinds.length === 0
+      ? null
+      : el('div', { class: 'legend-group' }, [
+          el('div', { class: 'legend-title' }, ['Edges']),
+          ...edgeKinds.map((k) => {
+            const s = edgeStyle(k);
+            return swatch(s.color, s.dash, s.label);
+          }),
+        ]),
+  ]);
 }
 
 // Shared by both coloring modes: a node "kind" and a Louvain community id are
