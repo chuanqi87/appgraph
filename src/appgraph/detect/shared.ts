@@ -24,7 +24,13 @@ export interface DetectContext {
   archModules: AppNode[];
 }
 
-const TEST_PATH_RE = /\/src\/(test|androidTest|androidtest)\//i;
+/**
+ * Any source-set segment containing "test" — `src/test/`, `src/androidTest/`,
+ * plus variant/fixture sets (`src/testDemo/`, `src/testFixtures/`,
+ * `src/screenshotTest/`, …) which the old fixed alternation missed and which
+ * let test files leak into the shipped app graph (nowinandroid's `testDemo`).
+ */
+const TEST_PATH_RE = /\/src\/[^/]*test[^/]*\//i;
 
 /** True for symbols under a test source set (excluded from the shipped app graph). */
 export function isTestPath(filePath: string): boolean {

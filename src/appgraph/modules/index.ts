@@ -9,6 +9,7 @@
 
 import { AppEdge, AppNode, CoverageWarning, makeEdgeId } from '../schema';
 import { CodeSymbolGraph } from '../graph-reader';
+import { isTestPath } from '../detect/shared';
 import { extractModuleSkeleton } from './gradle-ext';
 import { ModuleAssignment, assignNodesToModules } from './assign';
 import { aggregateModuleDependencies, liftedConfidence } from './aggregate';
@@ -52,7 +53,16 @@ export function buildModuleDependencyGraph(
     if (moduleId) nodeToModuleId.set(nodeId, moduleId);
   }
 
-  const lifted = aggregateModuleDependencies(reader.getAllEdges(), nodeToModuleId);
+  // Lifted coupling is computed over SHIPPED code only: a test calling into
+  // another module is not an app dependency, and test-driven edges were the
+  // main source of noisy/reversed implicit coupling in real projects.
+  const fileByNodeId = new Map(codeNodes.map((n) => [n.id, n.filePath]));
+  const mainNodeToModuleId = new Map<string, string>();
+  for (const [nodeId, moduleId] of nodeToModuleId) {
+    const file = fileByNodeId.get(nodeId);
+    if (file !== undefined && !isTestPath(file)) mainNodeToModuleId.set(nodeId, moduleId);
+  }
+  const lifted = aggregateModuleDependencies(reader.getAllEdges(), mainNodeToModuleId);
 
   // Enrich ArchModule nodes with the count of code symbols assigned to them.
   const dirSymbolCount = new Map<string, number>();
@@ -70,6 +80,8 @@ export function buildModuleDependencyGraph(
     lifted.map((d) => [makeEdgeId('depends_on', d.fromModuleId, d.toModuleId), d])
   );
 
+  const declaredPairs = new Set(skeleton.edges.map((e) => `${e.from}\0${e.to}`));
+
   let enrichedDeps = 0;
   let liftedDeps = 0;
   for (const [edgeId, dep] of liftedByPair) {
@@ -82,6 +94,10 @@ export function buildModuleDependencyGraph(
       });
       enrichedDeps++;
     } else {
+      // A lifted edge running AGAINST a declared dependency is usually resolver
+      // noise (name collisions, callback ownership) — kept in the graph for
+      // audit, but flagged so plan/facts consumers can demote it.
+      const reversed = declaredPairs.has(`${dep.toModuleId}\0${dep.fromModuleId}`);
       edgesById.set(edgeId, {
         id: edgeId,
         kind: 'depends_on',
@@ -89,7 +105,11 @@ export function buildModuleDependencyGraph(
         to: dep.toModuleId,
         provenance: 'lifted',
         confidence: liftedConfidence(dep.weight),
-        attrs: { weight: dep.weight, byKind: dep.byKind },
+        attrs: {
+          weight: dep.weight,
+          byKind: dep.byKind,
+          ...(reversed ? { suspect: 'reverse-of-declared' } : {}),
+        },
       });
       liftedDeps++;
     }

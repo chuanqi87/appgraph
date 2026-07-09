@@ -103,8 +103,13 @@ export function androidIntentEdges(ctx: ResolutionContext): Edge[] {
 
 // --- seam 3b · compose-route --------------------------------------------------
 
-/** `navController.navigate("home")` / `navigate(TopicRoute(…))` / `navigate(TopicRoute)`. */
-const NAVIGATE_RE = /\.navigate\s*\(\s*(?:route\s*=\s*)?(?:"([^"]+)"|([A-Z]\w*))/g;
+/**
+ * `navController.navigate("home")` / `navigate(TopicRoute(…))` / `navigate(TopicRoute)`.
+ * `\b` (not `\.`) so the bare call inside a nav-helper extension fn also matches —
+ * `fun Navigator.navigateToTopic(id) { navigate(TopicNavKey(id)) }` has no receiver
+ * dot. Precision holds: the key must still resolve to exactly one `route` node.
+ */
+const NAVIGATE_RE = /\bnavigate\s*\(\s*(?:route\s*=\s*)?(?:"([^"]+)"|([A-Z]\w*))/g;
 
 /**
  * `navController.navigate("home" | RouteType(…))` → calls edge from the enclosing
@@ -127,7 +132,7 @@ export function composeRouteEdges(ctx: ResolutionContext): Edge[] {
   for (const file of ctx.getAllFiles()) {
     if (!file.endsWith('.kt')) continue;
     const content = ctx.readFile(file);
-    if (!content || !content.includes('.navigate(')) continue;
+    if (!content || !content.includes('navigate(')) continue;
     const safe = stripCommentsForRegex(content, 'java');
     const fns = ctx.getNodesInFile(file).filter((n) => n.kind === 'method' || n.kind === 'function');
 

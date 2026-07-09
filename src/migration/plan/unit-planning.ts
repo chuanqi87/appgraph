@@ -161,6 +161,7 @@ function unitAdjacency(
   });
   for (const e of graph.edges) {
     if (e.kind !== 'depends_on' || e.provenance !== 'manifest') continue;
+    if (e.attrs?.scope === 'test') continue; // test-scoped deps do not order units
     const from = unitOfModule.get(e.from);
     const to = unitOfModule.get(e.to);
     if (from === undefined || to === undefined || from === to) continue;

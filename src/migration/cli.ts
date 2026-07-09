@@ -49,6 +49,7 @@ import {
   emptyMigrationGraph,
   mergeInto,
   MigrationGraph,
+  MigrationOrder,
 } from './types';
 import { canonicalJson } from '../appgraph/serialize';
 import {
@@ -576,7 +577,13 @@ async function cmdSync(pathArg: string, options: { out?: string }): Promise<void
   const reader = CodeSymbolGraph.open(root);
   try {
     const after = rebuildStructuralGraph(root, reader, before.source.app.packageName);
-    after.order = before.order;
+    // Re-derive the topo order from the fresh structure — keeping the stale
+    // order silently misorders new/renamed modules. Purely derived, so nothing
+    // is lost; the delta is surfaced below and in sync-report.json.
+    if (before.order) {
+      const modules = after.nodes.filter((n) => n.kind === 'ArchModule');
+      after.order = computeMigrationOrder(modules, after.edges).order;
+    }
     const harmonyNodes = before.nodes.filter((n) => n.platform === 'harmony');
     const mapsTo = before.edges.filter((e) => e.kind === 'maps_to');
     mergeInto(after, { nodes: harmonyNodes, edges: mapsTo });
@@ -592,15 +599,55 @@ async function cmdSync(pathArg: string, options: { out?: string }): Promise<void
     mergeInto(after, { nodes: withBaseline });
 
     const diff = diffMigrationGraphs(before, after);
+    const orderDiff = diffOrders(before.order, after.order);
     writeMigrationGraph(outPath, after);
     const reportPath = path.join(path.dirname(outPath), 'sync-report.json');
-    writeFileSync(reportPath, JSON.stringify(diff, null, 2) + '\n', 'utf8');
+    writeFileSync(reportPath, JSON.stringify({ ...diff, orderDiff }, null, 2) + '\n', 'utf8');
 
     printSyncDiff(diff, reportPath);
+    if (orderDiff && !orderDiff.unchanged) {
+      console.log(
+        `  迁移顺序已重算:单元 +${orderDiff.unitsAdded.length}/-${orderDiff.unitsRemoved.length}` +
+          `${orderDiff.reordered ? ' · 既有单元顺序有变' : ''} → 工单需重跑 migrate plan`
+      );
+    }
     console.log(`  图指纹 ${hashMigrationGraph(after).slice(0, 16)}`);
   } finally {
     reader.close();
   }
+}
+
+interface OrderDiff {
+  unchanged: boolean;
+  /** Labels of units present only in the recomputed order. */
+  unitsAdded: string[];
+  /** Labels of units that disappeared from the order. */
+  unitsRemoved: string[];
+  /** True when the shared units come out in a different relative sequence. */
+  reordered: boolean;
+}
+
+/** Delta between the persisted topo order and the freshly recomputed one. */
+function diffOrders(
+  before: MigrationOrder | undefined,
+  after: MigrationOrder | undefined
+): OrderDiff | null {
+  if (!before || !after) return null;
+  const beforeLabels = before.units.map((u) => u.label);
+  const afterLabels = after.units.map((u) => u.label);
+  const beforeSet = new Set(beforeLabels);
+  const afterSet = new Set(afterLabels);
+  const unitsAdded = afterLabels.filter((l) => !beforeSet.has(l));
+  const unitsRemoved = beforeLabels.filter((l) => !afterSet.has(l));
+  const sharedBefore = beforeLabels.filter((l) => afterSet.has(l));
+  const sharedAfter = afterLabels.filter((l) => beforeSet.has(l));
+  const reordered = sharedBefore.join('\0') !== sharedAfter.join('\0');
+  return {
+    unchanged: unitsAdded.length === 0 && unitsRemoved.length === 0 && !reordered,
+    unitsAdded,
+    unitsRemoved,
+    reordered,
+  };
 }
 
 function printSyncDiff(diff: MigrationDiff, reportPath: string): void {

@@ -56,6 +56,7 @@ export function computeMigrationOrder(
     if (e.kind !== 'depends_on') continue;
     if (!moduleIds.has(e.from) || !moduleIds.has(e.to) || e.from === e.to) continue;
     if (!opts.includeLifted && e.provenance !== 'manifest') continue;
+    if (e.attrs?.scope === 'test') continue; // testImplementation is not a migration prerequisite
     adj.get(e.from)!.add(e.to);
     edgesUsed++;
   }

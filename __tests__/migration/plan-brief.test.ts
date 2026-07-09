@@ -26,6 +26,7 @@ function brief(over: Partial<ModuleBrief> = {}): ModuleBrief {
     publicInterface: [],
     capabilities: [],
     dependencies: [],
+    testDependencies: [],
     impliedDependencies: [],
     screens: [],
     dataModels: [],
@@ -124,6 +125,17 @@ describe('P · brief rendering', () => {
     );
     expect(md).toContain('声明依赖 [清单] **:core:model** — 公共成员:class Topic');
     expect(md).toContain('隐式耦合 [启发] **:core:common** — 权重 12(calls×8 · references×4)');
+  });
+
+  it('renders test-scoped deps separately, marked non-blocking', () => {
+    const md = renderUnitBrief(
+      unit(),
+      [brief({ testDependencies: [':core:testing', ':core:datastore-test'] })],
+      22
+    );
+    expect(md).toContain('测试期依赖 [清单] **:core:testing**、**:core:datastore-test**');
+    expect(md).toContain('不阻塞本单元迁移');
+    expect(md).not.toContain('声明依赖 [清单] **:core:testing**');
   });
 
   it('renders the acceptance checklist tied to the verify gate', () => {

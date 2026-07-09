@@ -329,11 +329,17 @@ function renderTestContract(lines: string[], m: ModuleBrief): void {
 
 function renderDependencies(lines: string[], m: ModuleBrief): void {
   lines.push('### 依赖');
-  if (m.dependencies.length === 0 && m.impliedDependencies.length === 0) {
+  if (m.dependencies.length === 0 && m.impliedDependencies.length === 0 && m.testDependencies.length === 0) {
     lines.push('_(无内部依赖,是叶子模块)_');
   }
   for (const d of m.dependencies) {
     lines.push(`- 声明依赖 [清单] **${d.moduleName}** — 公共成员:${d.publicMembers.join(', ') || '—'}`);
+  }
+  if (m.testDependencies.length > 0) {
+    lines.push(
+      `- 测试期依赖 [清单] ${m.testDependencies.map((n) => `**${n}**`).join('、')}` +
+        `(testImplementation 等测试配置;不阻塞本单元迁移,移植测试时才需要)`
+    );
   }
   for (const d of m.impliedDependencies) {
     const kinds = Object.entries(d.byKind)

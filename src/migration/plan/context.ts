@@ -24,10 +24,10 @@ import { DiFacts } from '../../appgraph/detect/di';
 import { FlowFacts } from '../../appgraph/detect/flows';
 import { FieldSchema } from '../../appgraph/detect/entities';
 import { TestContractFacts } from '../../appgraph/detect/tests';
+import { isTestPath } from '../../appgraph/detect/shared';
 
 /** Public interface kinds — the cross-module surface (types + top-level fns). */
 const INTERFACE_KINDS = new Set<NodeKind>(['class', 'interface', 'enum', 'function']);
-const TEST_PATH_RE = /\/src\/(test|androidTest|androidtest)\//i;
 
 export interface InterfaceMember {
   kind: NodeKind;
@@ -108,6 +108,9 @@ export interface ModuleBrief {
   publicInterface: InterfaceMember[];
   capabilities: CapabilityUse[];
   dependencies: DependencyBrief[];
+  /** Test-scoped declared deps (testImplementation/androidTest…) — NOT migration
+   *  prerequisites; listed separately so they never read as blocking. */
+  testDependencies: string[];
   impliedDependencies: ImpliedDependency[];
   /** Component-role distribution across this module's symbols (U1). */
   roleCounts?: Record<string, number>;
@@ -138,8 +141,10 @@ export interface AssemblyInput {
   /** module id → its code node ids. */
   moduleIdToNodeIds: Map<string, string[]>;
   nodeById: Map<string, Node>;
-  /** declared module→module depends_on (from → set of to). */
+  /** declared module→module depends_on, main scope only (from → set of to). */
   moduleDeps: Map<string, string[]>;
+  /** declared module→module depends_on under test configurations only. */
+  moduleTestDeps: Map<string, string[]>;
   /** lifted module→module coupling (from → advisory dependencies). */
   liftedDeps: Map<string, ImpliedDependency[]>;
   /** module id → owned Screen nodes (U2/U6), via app_contains. */
@@ -191,6 +196,9 @@ export function assembleModuleBrief(
     publicInterface: extractPublicInterface(nodes),
     capabilities: extractCapabilities(nodes),
     dependencies: extractDependencies(moduleId, input),
+    testDependencies: [...(input.moduleTestDeps.get(moduleId) ?? [])]
+      .map((id) => input.moduleById.get(id)?.name ?? id)
+      .sort(),
     impliedDependencies: input.liftedDeps.get(moduleId) ?? [],
     roleCounts: asRecord(module?.attrs?.roleCounts),
     screens: (input.screensByModule.get(moduleId) ?? [])
@@ -273,8 +281,12 @@ export function extractPublicInterface(nodes: Node[]): InterfaceMember[] {
   const members: InterfaceMember[] = [];
   for (const n of nodes) {
     if (!INTERFACE_KINDS.has(n.kind)) continue;
-    if (TEST_PATH_RE.test(n.filePath)) continue;
+    if (isTestPath(n.filePath)) continue;
     if (n.visibility === 'private' || n.visibility === 'internal') continue;
+    // Anonymous classes (`<Listener$anon@42>`, `<anonymous>`) are extraction
+    // artifacts, not exportable surface — and their names embed line numbers,
+    // so letting them in makes the T3 baseline both unfulfillable and unstable.
+    if (n.name.startsWith('<')) continue;
     members.push({
       kind: n.kind,
       name: n.name,

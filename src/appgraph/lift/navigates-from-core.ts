@@ -18,7 +18,17 @@
 
 import { AppEdge, AppNode, makeEdgeId } from '../schema';
 import { CodeSymbolGraph } from '../graph-reader';
+import { isTestPath } from '../detect/shared';
 import { Node } from '../../types';
+
+/** Caller-chain traversal bounds: a navigate helper is rarely more than a couple
+ *  of hops behind its screen; past that the attribution is app-wide plumbing. */
+const CALLER_MAX_DEPTH = 3;
+const CALLER_MAX_VISITED = 64;
+/** A site attributed to more screens than this is shared chrome, not a flow. */
+const SOURCE_SCREEN_CAP = 4;
+/** Import-based helper attribution fans wider (every screen consuming the helper). */
+const IMPORTER_SCREEN_CAP = 8;
 
 export interface NavFromCoreResult {
   navEdges: AppEdge[];
@@ -60,6 +70,10 @@ export function liftNavigatesToFromCore(
   const routeTargets = new Map<string, Node[]>();
   // core node id → its callers (for a screen that calls a navigate helper).
   const callersOf = new Map<string, Node[]>();
+  // fn core id → the namespace nodes of files importing it (method-reference
+  // callbacks — `onTopicClick = navigator::navigateToTopic` — leave no `calls`
+  // edge in the core graph, only the importing file's `imports` edge).
+  const importersOf = new Map<string, Node[]>();
   for (const e of allEdges) {
     if (e.kind === 'references') {
       const from = coreById.get(e.source);
@@ -68,6 +82,9 @@ export function liftNavigatesToFromCore(
     } else if (e.kind === 'calls') {
       const from = coreById.get(e.source);
       if (from) pushInto(callersOf, e.target, from);
+    } else if (e.kind === 'imports') {
+      const from = coreById.get(e.source);
+      if (from) pushInto(importersOf, e.target, from);
     }
   }
 
@@ -83,24 +100,92 @@ export function liftNavigatesToFromCore(
       .filter((c) => c.startLine <= fn.startLine && c.endLine >= fn.endLine)
       .sort((a, b) => a.endLine - a.startLine - (b.endLine - b.startLine))[0];
 
-  /** The Screen(s) a navigate/intent site is attributed to: the site's own
-   *  screen, its owning class's screen, or (helper indirection) its callers'. */
+  // route nodes by file, for the entry-sibling rule below.
+  const routesByFile = new Map<string, Node[]>();
+  for (const n of coreById.values()) {
+    if (n.kind === 'route') pushInto(routesByFile, n.filePath, n);
+  }
+
+  const screenOf = (node: Node): AppNode | undefined => {
+    const direct = screenBySymbol.get(node.name);
+    if (direct) return direct;
+    const owner = owningClassOf(node);
+    return owner ? screenBySymbol.get(owner.name) : undefined;
+  };
+
+  /** Screens registered by the route nodes of a file (optionally only those inside
+   *  a line span) — the destination composables the routes reference. */
+  const routeScreensIn = (filePath: string, span?: { start: number; end: number }): AppNode[] => {
+    const out: AppNode[] = [];
+    for (const route of routesByFile.get(filePath) ?? []) {
+      if (span && (route.startLine < span.start || route.endLine > span.end)) continue;
+      for (const dest of routeTargets.get(route.id) ?? []) {
+        const s = screenBySymbol.get(dest.name);
+        if (s && !out.includes(s)) out.push(s);
+      }
+    }
+    return out;
+  };
+
+  /** Entry-sibling rule: a navigate call inside an entry-provider fn (Navigation3's
+   *  `fun EntryProviderScope<…>.searchEntry(…) { entry<SearchNavKey> { SearchScreen(…) } }`)
+   *  belongs to the screen that fn REGISTERS — the destination of the route node(s)
+   *  declared within the fn's own line span. */
+  const entrySiblingScreens = (fn: Node): AppNode[] =>
+    routeScreensIn(fn.filePath, { start: fn.startLine, end: fn.endLine });
+
+  /** Last-chance attribution for a navigate HELPER invoked only through method
+   *  references (`navigator::navigateToTopic`): the core graph records no `calls`
+   *  edge, but every consuming file imports the helper — attribute the navigation
+   *  to the screens those importing files register. Every link is graph-anchored
+   *  (imports edge → file's route nodes → route's destination), no name guessing. */
+  const importerScreens = (fn: Node): AppNode[] => {
+    const out: AppNode[] = [];
+    for (const importer of importersOf.get(fn.id) ?? []) {
+      if (importer.filePath === fn.filePath || isTestPath(importer.filePath)) continue;
+      for (const s of routeScreensIn(importer.filePath)) {
+        if (!out.includes(s)) out.push(s);
+      }
+    }
+    return out.length <= IMPORTER_SCREEN_CAP ? out : [];
+  };
+
+  /** The Screen(s) a navigate/intent site is attributed to: the site's own screen,
+   *  its owning class's screen, the screen its entry-provider registers, or —
+   *  helper/overload indirection — a bounded walk up the `calls` chain (a wrapper
+   *  overload or `navigateToX()` helper can sit a couple of hops behind the screen). */
   const sourceScreensFor = (fn: Node): AppNode[] => {
+    if (isTestPath(fn.filePath)) return []; // a test driving navigation is not app flow
     const direct = screenBySymbol.get(fn.name);
     if (direct) return [direct];
     const owner = owningClassOf(fn);
     const ownerScreen = owner ? screenBySymbol.get(owner.name) : undefined;
     if (ownerScreen) return [ownerScreen];
+    const siblings = entrySiblingScreens(fn);
+    if (siblings.length > 0) return siblings;
+
+    // Bounded BFS up the caller chain; a branch stops at the first screen it finds.
     const out: AppNode[] = [];
-    for (const caller of callersOf.get(fn.id) ?? []) {
-      const s = screenBySymbol.get(caller.name) ?? screenOfOwner(caller);
-      if (s) out.push(s);
+    const visited = new Set<string>([fn.id]);
+    let frontier = [fn];
+    for (let depth = 0; depth < CALLER_MAX_DEPTH && frontier.length > 0; depth++) {
+      const next: Node[] = [];
+      for (const node of frontier) {
+        for (const caller of callersOf.get(node.id) ?? []) {
+          if (visited.has(caller.id) || visited.size > CALLER_MAX_VISITED) continue;
+          visited.add(caller.id);
+          if (isTestPath(caller.filePath)) continue;
+          const s = screenOf(caller) ?? entrySiblingScreens(caller)[0];
+          if (s) {
+            if (!out.includes(s)) out.push(s);
+          } else {
+            next.push(caller);
+          }
+        }
+      }
+      frontier = next;
     }
-    return out;
-    function screenOfOwner(node: Node): AppNode | undefined {
-      const oc = owningClassOf(node);
-      return oc ? screenBySymbol.get(oc.name) : undefined;
-    }
+    return out.length <= SOURCE_SCREEN_CAP ? out : [];
   };
 
   const edgeById = new Map<string, AppEdge>();
@@ -117,11 +202,16 @@ export function liftNavigatesToFromCore(
 
     if (e.synthesizedBy === 'compose-route') {
       const dests = routeTargets.get(e.target) ?? [];
-      const fromScreens = sourceScreensFor(src);
+      let fromScreens = sourceScreensFor(src);
+      let confidence = 0.85;
+      if (fromScreens.length === 0 && !isTestPath(src.filePath)) {
+        fromScreens = importerScreens(src); // method-reference-only helper
+        confidence = 0.7;
+      }
       for (const dest of dests) {
         const toScreen = screenBySymbol.get(dest.name);
         if (!toScreen) continue;
-        for (const fromScreen of fromScreens) emit('navigates_to', fromScreen, toScreen, 'compose-route', 0.85);
+        for (const fromScreen of fromScreens) emit('navigates_to', fromScreen, toScreen, 'compose-route', confidence);
       }
     } else if (e.synthesizedBy === 'android-intent') {
       const targetClass = coreById.get(e.target);

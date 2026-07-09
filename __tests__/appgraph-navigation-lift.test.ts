@@ -121,4 +121,102 @@ fun goAbout(nav: NavHostController) { nav.navigate("about") }
     expect(navNodes.length).toBeGreaterThan(0);
     expect(graph.edges.filter((e) => e.kind === 'navigates_to').every((e) => e.provenance === 'lifted')).toBe(true);
   });
+
+  it('lifts Navigation3 entry-provider navigation (nowinandroid shape)', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'navlift3-'));
+    const w = (rel: string, s: string): void => {
+      const f = path.join(root!, rel);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, s, 'utf8');
+    };
+    w('app/build.gradle.kts', 'dependencies { implementation("androidx.compose.ui:ui") }');
+    w(
+      'app/src/main/AndroidManifest.xml',
+      '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.n3">' +
+        '<application><activity android:name=".MainActivity" android:exported="true"><intent-filter>' +
+        '<action android:name="android.intent.action.MAIN"/>' +
+        '<category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>' +
+        '</application></manifest>'
+    );
+    // Nav helper on a custom Navigator: BARE navigate() (no receiver dot) + a
+    // NavKey TYPE argument — the exact shape `\.navigate` used to miss.
+    w(
+      'app/src/main/java/com/n3/TopicNav.kt',
+      `package com.n3
+import androidx.navigation3.runtime.NavKey
+data class TopicKey(val id: String) : NavKey
+fun Navigator.navigateToTopic(id: String) { navigate(TopicKey(id)) }
+`
+    );
+    // Entry providers: entry<Key> registers the screen; a navigate INSIDE the
+    // provider fn attributes to the screen that fn registers (entry-sibling);
+    // a method-reference-only helper attributes via the importing file.
+    w(
+      'app/src/main/java/com/n3/SearchEntry.kt',
+      `package com.n3
+import androidx.compose.runtime.Composable
+import androidx.navigation3.runtime.EntryProviderScope
+import androidx.navigation3.runtime.NavKey
+import com.n3.navigateToTopic
+data class SearchKey(val q: String) : NavKey
+fun EntryProviderScope<NavKey>.searchEntry(navigator: Navigator) {
+  entry<SearchKey> { key ->
+    SearchScreen(onTopic = navigator::navigateToTopic, onHome = { navigator.navigate(HomeKey) })
+  }
+}
+@Composable fun SearchScreen(onTopic: (String) -> Unit, onHome: () -> Unit) {}
+`
+    );
+    w(
+      'app/src/main/java/com/n3/TopicEntry.kt',
+      `package com.n3
+import androidx.compose.runtime.Composable
+import androidx.navigation3.runtime.EntryProviderScope
+import androidx.navigation3.runtime.NavKey
+fun EntryProviderScope<NavKey>.topicEntry(navigator: Navigator) {
+  entry<TopicKey> { key -> TopicScreen(key.id) }
+}
+@Composable fun TopicScreen(id: String) {}
+`
+    );
+    w(
+      'app/src/main/java/com/n3/HomeEntry.kt',
+      `package com.n3
+import androidx.compose.runtime.Composable
+import androidx.navigation3.runtime.EntryProviderScope
+import androidx.navigation3.runtime.NavKey
+object HomeKey : NavKey
+fun EntryProviderScope<NavKey>.homeEntry(navigator: Navigator) {
+  entry<HomeKey> { HomeScreen() }
+}
+@Composable fun HomeScreen() {}
+`
+    );
+    // A test source set driving navigation must lift NOTHING.
+    w(
+      'app/src/testDemo/java/com/n3/NavTest.kt',
+      `package com.n3
+class NavTest { fun drive(navigator: Navigator) { navigator.navigate(TopicKey("t")) } }
+`
+    );
+
+    const cg = CodeGraph.initSync(root);
+    await cg.indexAll();
+    cg.close();
+    reader = CodeSymbolGraph.open(root);
+    const graph = buildAppGraph(root, reader, { platform: 'android' });
+    const byId = new Map(graph.nodes.map((n) => [n.id, n] as const));
+    const nav = graph.edges
+      .filter((e) => e.kind === 'navigates_to')
+      .map((e) => ({ from: byId.get(e.from)?.name, to: byId.get(e.to)?.name }));
+    const pair = (from: string, to: string) => nav.find((e) => e.from === from && e.to === to);
+
+    // entry-sibling: navigate(HomeKey) inside searchEntry → SearchScreen→HomeScreen.
+    expect(pair('SearchScreen', 'HomeScreen')).toBeTruthy();
+    // importer chain: navigateToTopic helper (bare navigate + method reference
+    // call sites only) → the importing entry-provider's screen.
+    expect(pair('SearchScreen', 'TopicScreen')).toBeTruthy();
+    // the test file's navigate lifted nothing.
+    expect(nav.length).toBe(2);
+  });
 });

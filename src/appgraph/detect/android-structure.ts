@@ -51,6 +51,7 @@ import {
   moduleDirIndex,
   topSegment,
 } from './manifest-capabilities';
+import { isTestPath } from './shared';
 
 /** Manifest node kinds S2 persists (S1 owns Permission/Capability). */
 const KEPT_NODE_KINDS = new Set(['Screen', 'BackgroundComponent', 'AppEntry', 'Resource']);
@@ -80,7 +81,6 @@ const EXCLUDED_DIRS = new Set([
   '.codegraph',
   '.migration',
 ]);
-const TEST_SEGMENTS = ['/src/test/', '/src/androidtest/'];
 
 /**
  * A screen "hosts" an xml-layout Screen via one of these evidence kinds — the
@@ -418,8 +418,7 @@ function findScreenSourceFiles(root: string): string[] {
 }
 
 function isTestSource(path: string): boolean {
-  const p = toPosix(path).toLowerCase();
-  return TEST_SEGMENTS.some((seg) => p.includes(seg));
+  return isTestPath(toPosix(path));
 }
 
 function toPosix(p: string): string {

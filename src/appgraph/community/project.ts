@@ -16,6 +16,7 @@
 import Graph from 'graphology';
 import { EdgeKind, Node } from '../../types';
 import { CodeEdge } from '../graph-reader';
+import { isTestPath } from '../detect/shared';
 
 /** Same dependency-bearing kinds the module aggregation lifts (imports/contains excluded). */
 const COUPLING_EDGE_KINDS = new Set<EdgeKind>([
@@ -57,6 +58,10 @@ export function projectFileCoupling(
   const nodeIdToFile = new Map<string, string>();
   const fileSymbolCount = new Map<string, number>();
   for (const n of nodes) {
+    // Test sources are excluded from the projection: a test that touches five
+    // features would otherwise stitch those five features into one community
+    // (the NiaApp 30-file/14-module grab-bag cluster came from exactly this).
+    if (isTestPath(n.filePath)) continue;
     nodeIdToFile.set(n.id, n.filePath);
     if (fileToModuleDir.has(n.filePath)) {
       fileSymbolCount.set(n.filePath, (fileSymbolCount.get(n.filePath) ?? 0) + 1);

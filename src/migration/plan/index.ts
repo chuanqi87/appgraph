@@ -254,16 +254,23 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
   const moduleIdToNodeIds = assignNodeIdsByModule(nodes, moduleDirs, moduleDirToId);
 
   // Declared depends_on is the ground truth; lifted coupling is advisory.
+  // Test-scoped declared deps (testImplementation/…) are kept apart: they are
+  // not migration prerequisites and must not read as blocking in a brief.
   const moduleDeps = new Map<string, string[]>();
+  const moduleTestDeps = new Map<string, string[]>();
   const liftedDeps = new Map<string, ImpliedDependency[]>();
   for (const e of graph.edges) {
     if (e.kind !== 'depends_on') continue;
     if (!moduleById.has(e.from) || !moduleById.has(e.to)) continue;
     if (e.provenance === 'manifest') {
-      const list = moduleDeps.get(e.from) ?? [];
+      const bucket = e.attrs?.scope === 'test' ? moduleTestDeps : moduleDeps;
+      const list = bucket.get(e.from) ?? [];
       list.push(e.to);
-      moduleDeps.set(e.from, list);
+      bucket.set(e.from, list);
     } else {
+      // A reverse-of-declared lifted edge is resolver noise (e.g. a feature
+      // "depending on" :app) — do not present it to the migration agent.
+      if (e.attrs?.suspect === 'reverse-of-declared') continue;
       const list = liftedDeps.get(e.from) ?? [];
       list.push({
         moduleName: moduleById.get(e.to)?.name ?? e.to,
@@ -365,6 +372,7 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     moduleIdToNodeIds,
     nodeById,
     moduleDeps,
+    moduleTestDeps,
     liftedDeps,
     screensByModule,
     dataModelsByModule,

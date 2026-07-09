@@ -650,7 +650,8 @@ function unitNeighbors(
   const deps = new Set<string>(); // module id → depends on module id
   if (graph) {
     for (const e of graph.edges) {
-      if (e.kind === 'depends_on' && e.provenance === 'manifest') deps.add(`${e.from}\0${e.to}`);
+      if (e.kind === 'depends_on' && e.provenance === 'manifest' && e.attrs?.scope !== 'test')
+        deps.add(`${e.from}\0${e.to}`);
     }
   }
   const dependsOn = (a: UnitPlan, b: UnitPlan): boolean =>
@@ -814,15 +815,26 @@ function renderModuleFacts(graph: MigrationGraph, module: AppNode): string {
   }
 
   const declared: string[] = [];
+  const testScoped: string[] = [];
   const implied: string[] = [];
   for (const e of graph.edges) {
     if (e.kind !== 'depends_on' || e.from !== module.id) continue;
     const to = nodeById.get(e.to);
     if (!to || to.kind !== 'ArchModule') continue;
-    if (e.provenance === 'manifest') declared.push(`- ${to.name}`);
-    else implied.push(`- ${to.name}(权重 ${e.attrs?.weight ?? '?'})`);
+    if (e.provenance === 'manifest') {
+      (e.attrs?.scope === 'test' ? testScoped : declared).push(`- ${to.name}`);
+    } else {
+      const suspect = e.attrs?.suspect === 'reverse-of-declared' ? ' ⚠反向可疑(与声明依赖方向相反,多为解析噪声)' : '';
+      implied.push(`- ${to.name}(权重 ${e.attrs?.weight ?? '?'})${suspect}`);
+    }
   }
   section(lines, `## 声明依赖(${declared.length})`, declared.sort(), declared.length);
+  section(
+    lines,
+    `## 测试期依赖(${testScoped.length},不阻塞迁移)`,
+    testScoped.sort(),
+    testScoped.length
+  );
   section(lines, `## 隐式耦合 [启发](${implied.length})`, implied.sort(), implied.length);
 
   return lines.join('\n');

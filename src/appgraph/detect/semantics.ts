@@ -121,6 +121,32 @@ export function buildSemantics(
   ];
   const navLift = liftNavigatesToFromCore(reader, navTargets);
 
+  // Anti-silence guard: a screenful app with an empty/near-empty navigation graph
+  // is a coverage failure the agent must SEE, not a plausible-looking "no nav".
+  // (The regression that motivated this: a `.codegraph` indexed by a pre-synthesizer
+  // build has zero compose-route/android-intent edges, and the lift silently
+  // produced navigates_to=0 while everything else looked healthy.)
+  const navWarnings: CoverageWarning[] = [];
+  const screenCount = navTargets.filter((n) => n.kind === 'Screen').length;
+  if (screenCount >= 5 && navLift.stats.navigatesTo === 0) {
+    const synthCount = reader.getSynthesizedEdges(['compose-route', 'android-intent']).length;
+    navWarnings.push({
+      message:
+        synthCount === 0
+          ? `识别出 ${screenCount} 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边——` +
+            `导航图为空，不可依赖。若 .codegraph 索引由旧版本构建，请用当前版本重跑 codegraph index；` +
+            `若索引已是最新，则该应用的导航机制（如 Fragment 事务/自研路由）未被合成器覆盖`
+          : `识别出 ${screenCount} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
+            `导航图为空，页面迁移关系不可依赖`,
+    });
+  } else if (screenCount >= 20 && navLift.stats.navigatesTo < screenCount * 0.05) {
+    navWarnings.push({
+      message:
+        `识别出 ${screenCount} 个 Screen 但只提升出 ${navLift.stats.navigatesTo} 条 navigates_to——` +
+        `导航覆盖异常稀疏（该应用的导航机制可能未被合成器覆盖，页面迁移关系不完整）`,
+    });
+  }
+
   const enrichedModules = archModules.map((m) =>
     enrichModule(m, {
       roleCounts: roleCounts.get(m.id),
@@ -155,6 +181,7 @@ export function buildSemantics(
     ...constants.warnings,
     ...resources.warnings,
     ...structure.warnings,
+    ...navWarnings,
   ];
 
   return {
