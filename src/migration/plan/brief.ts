@@ -14,7 +14,7 @@
  */
 
 import { ContractCheck, UnitContract } from './contract';
-import { BackgroundComponentBrief, DataModelBrief, ModuleBrief, ScreenBrief } from './context';
+import { BackgroundComponentBrief, CustomViewBrief, DataModelBrief, ModuleBrief, ScreenBrief } from './context';
 import { isNestedType, typePathKey } from '../../appgraph/qualified-name';
 
 /** The unit shape the renderer needs (MigrationUnit and UnitPlan both satisfy it). */
@@ -137,6 +137,7 @@ function renderModule(lines: string[], m: ModuleBrief): void {
   lines.push('');
 
   renderScreens(lines, m.screens);
+  renderCustomViews(lines, m.customViews);
   renderBackgroundComponents(lines, m.backgroundComponents);
   renderEntrypoints(lines, m);
   renderDataModels(lines, m.dataModels);
@@ -162,6 +163,17 @@ function renderScreens(lines: string[], screens: ScreenBrief[]): void {
       lines.push(`  - 关联布局 [静态]:${s.layouts.join(', ')}`);
     }
   }
+  lines.push('');
+}
+
+function renderCustomViews(lines: string[], views: CustomViewBrief[] | undefined): void {
+  // Absent on a pre-P1-6 plan.json (the field is additive).
+  if (!views || views.length === 0) return;
+  lines.push('### 自定义 View [静态](ArkUI 无 UI 类继承 —— 需按组合/@Builder 重写,不可 1:1 翻译)');
+  for (const v of views) {
+    lines.push(`- ${v.name} extends ${v.superClass}${v.file ? ` — ${v.file}` : ''}`);
+  }
+  lines.push('  改写要点:继承的 View 子类 → \`@Component\` struct 或 \`@Builder\` 函数,自绘/measure/layout 逻辑迁到 ArkUI 布局与绘制 API。');
   lines.push('');
 }
 

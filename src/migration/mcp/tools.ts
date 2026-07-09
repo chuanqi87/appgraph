@@ -157,6 +157,12 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
     description: '功能簇(Feature):确定性聚类出的功能模块及其成员。按“功能”而非工程模块看应用。',
     inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
   },
+  {
+    name: 'app_modules',
+    description:
+      '模块依赖图全景:每个 Gradle 模块的角色/层/必要性(产品|开发支撑)/符号量,及其声明依赖邻接表(自底向上)。不需精确模块名,是 migrate_module_facts 的入口 —— 先用它看全局,再对具体模块查 facts。',
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
+  },
 ];
 
 const PIPELINE_HINT =
@@ -205,6 +211,8 @@ export class MigrateToolHandler {
         return this.appNav(root);
       case 'app_features':
         return this.appFeatures(root);
+      case 'app_modules':
+        return this.appModules(root);
       default:
         throw new Error(`未知工具:${name}`);
     }
@@ -638,6 +646,58 @@ export class MigrateToolHandler {
       lines.push(`  · ${f.name}${weak}${ms.length ? `: ${ms.join(', ')}` : ''}`);
     }
     if (features.length > MAX_LIST) lines.push(`  … 及另外 ${features.length - MAX_LIST} 个`);
+    return text(lines.join('\n'));
+  }
+
+  /**
+   * Module dependency graph overview — role/layer/necessity/symbolCount + the
+   * declared depends_on adjacency, bottom-up. The entry point migrate_module_facts
+   * was missing: an agent had to already know a module name to query it.
+   */
+  private appModules(root: string): ToolResult {
+    const graph = this.loadGraph(root);
+    if (!graph) return text(PIPELINE_HINT);
+    const modules = graph.nodes
+      .filter((n) => n.kind === 'ArchModule' && n.platform === 'android')
+      .sort(byName);
+    if (modules.length === 0) {
+      return text('未发现 Gradle 模块(工程可能是单模块或未跑 migrate modules)。');
+    }
+
+    // Declared (manifest) depends_on adjacency; test-scoped deps listed apart.
+    const nameById = new Map(modules.map((m) => [m.id, m.name]));
+    const deps = new Map<string, string[]>();
+    const testDeps = new Map<string, string[]>();
+    for (const e of graph.edges) {
+      if (e.kind !== 'depends_on' || e.provenance !== 'manifest') continue;
+      const to = nameById.get(e.to);
+      if (!to || !nameById.has(e.from)) continue;
+      const bucket = e.attrs?.scope === 'test' ? testDeps : deps;
+      bucket.set(e.from, [...(bucket.get(e.from) ?? []), to]);
+    }
+
+    const devOnly = modules.filter((m) => m.attrs?.necessity === 'dev-only').length;
+    const lines = [`# 模块依赖图(${modules.length} 个模块${devOnly ? `,其中 ${devOnly} 个开发支撑` : ''})`];
+    lines.push('每行:模块 · 角色/层/必要性 · 符号量 → 声明依赖(自底向上,依赖排在更早迁移)');
+    lines.push('');
+    for (const m of modules) {
+      const a = m.attrs ?? {};
+      const tags = [
+        m.subtype ? `角色 ${m.subtype}` : '',
+        typeof a.layer === 'string' ? `层 ${a.layer}` : '',
+        a.necessity === 'dev-only' ? '开发支撑' : '产品',
+        typeof a.symbolCount === 'number' ? `符号 ${a.symbolCount}` : '',
+      ].filter(Boolean).join(' · ');
+      const d = (deps.get(m.id) ?? []).sort();
+      const td = (testDeps.get(m.id) ?? []).sort();
+      lines.push(
+        `· ${m.name} [${tags}]` +
+          (d.length ? ` → ${d.join(', ')}` : ' → (叶子)') +
+          (td.length ? `;测试期依赖 ${td.join(', ')}` : '')
+      );
+    }
+    lines.push('');
+    lines.push('看某模块完整事实用 migrate_module_facts {"module":"<模块名>"}。');
     return text(lines.join('\n'));
   }
 }

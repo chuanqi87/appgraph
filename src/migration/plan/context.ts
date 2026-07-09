@@ -87,6 +87,20 @@ export interface BackgroundComponentBrief {
   file?: string;
 }
 
+/**
+ * A custom View subclass (P1-6). ArkUI has no class inheritance for UI, so a
+ * class extending an Android View can't be translated 1:1 — it must be rebuilt
+ * as a `@Component` struct / `@Builder`. Surfacing them warns the agent about
+ * the inheritance→composition rewrite the dogfood pass showed it silently missed.
+ */
+export interface CustomViewBrief {
+  name: string;
+  /** The Android View base class it extends (e.g. `LinearLayout`, `View`). */
+  superClass: string;
+  /** Source file anchor (project-relative). */
+  file?: string;
+}
+
 /** A source data model (U3) — drives target RDB table / interface design. */
 export interface DataModelBrief {
   name: string;
@@ -120,6 +134,8 @@ export interface ModuleBrief {
   screens: ScreenBrief[];
   /** Data models this module owns (U3) — target RDB tables / interfaces. */
   dataModels: DataModelBrief[];
+  /** Custom View subclasses (P1-6) — inheritance→composition rewrite anchors. */
+  customViews: CustomViewBrief[];
   /** DI assembly this module declares (U4) — manual wiring on the target. */
   di?: DiFacts;
   /** Reactive states this module exposes/collects (U5). */
@@ -165,6 +181,8 @@ export interface AssemblyInput {
   deeplinksByModule: Map<string, string[]>;
   /** Screen node id → hosted xml-layout screen names (S2 set-content-view). */
   layoutsByScreenId: Map<string, string[]>;
+  /** module id → custom View subclasses it declares (P1-6). */
+  customViewsByModule: Map<string, CustomViewBrief[]>;
 }
 
 /**
@@ -211,6 +229,9 @@ export function assembleModuleBrief(
     dataModels: (input.dataModelsByModule.get(moduleId) ?? [])
       .filter((n) => inFilter(n.platformRef?.file))
       .map(toDataModelBrief)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    customViews: (input.customViewsByModule.get(moduleId) ?? [])
+      .filter((v) => inFilter(v.file))
       .sort((a, b) => a.name.localeCompare(b.name)),
     di: asDiFacts(module?.attrs?.di),
     flows: asFlowFacts(module?.attrs?.flows),

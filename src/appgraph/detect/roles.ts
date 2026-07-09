@@ -87,6 +87,41 @@ export function classifyRole(node: Node, code: string): RoleInfo | null {
   return null;
 }
 
+/**
+ * Android View base classes whose subclass is a CUSTOM VIEW (P1-6). ArkUI has
+ * no UI class inheritance, so such a class needs an inheritance→composition
+ * rewrite (`@Component`/`@Builder`) rather than a 1:1 translation. Matched on the
+ * SUPERTYPE base name: the broad `*View`/`*Layout`/`*Button`/`*Bar` suffixes
+ * cover the containers and widgets, and the explicit set catches the widget
+ * bases that don't carry one of those suffixes.
+ */
+const VIEW_SUPER_EXPLICIT = new Set([
+  'View',
+  'ViewGroup',
+  'EditText',
+  'CheckBox',
+  'RadioButton',
+  'Spinner',
+  'Chip',
+  'Switch',
+  'ToggleButton',
+  'NumberPicker',
+  'Chronometer',
+  'Gallery',
+  'Space',
+  'CompoundButton',
+  'Toolbar', // ends in lowercase 'bar' — not caught by the *Bar suffix
+]);
+const VIEW_SUPER_SUFFIX = /(?:View|Layout|Button|Bar)$/;
+
+/** Whether a supertype base name is an Android View base (custom-View detection). */
+export function isAndroidViewSuper(superBaseName: string): boolean {
+  if (VIEW_SUPER_EXPLICIT.has(superBaseName)) return true;
+  // A bare 'Bar' suffix on a short word (e.g. 'Bar', 'Car') is too loose; require
+  // the recognized widget/container suffixes on a name of reasonable length.
+  return superBaseName.length > 3 && VIEW_SUPER_SUFFIX.test(superBaseName);
+}
+
 /** Just the class-header text (up to the first `{` or `(`), for cheap `data`/keyword checks. */
 function sanitizedHeader(code: string): string {
   const cut = Math.min(

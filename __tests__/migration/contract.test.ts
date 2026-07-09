@@ -54,7 +54,7 @@ function reader(): CodeSymbolGraph {
     codeNode('n1', 'class', 'ApiService', F_SERVICE),
     codeNode('n2', 'class', 'NetworkModel', F_MODEL),
   ];
-  return { getAllNodes: () => nodes } as unknown as CodeSymbolGraph;
+  return { getAllNodes: () => nodes, getCode: () => null } as unknown as CodeSymbolGraph;
 }
 
 function codeNode(id: string, kind: Node['kind'], name: string, filePath: string): Node {

@@ -15,12 +15,16 @@ import { join } from 'node:path';
 import { AppNode, slug } from '../../appgraph/schema';
 import { Node } from '../../types';
 import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
+import { isAndroidViewSuper } from '../../appgraph/detect/roles';
+import { superTypes } from '../../appgraph/detect/kotlin-source';
+import { isTestPath } from '../../appgraph/detect/shared';
 import { CodeSymbolGraph } from '../../appgraph/graph-reader';
 import { getPlanDir } from '../paths';
 import { canonicalJson } from '../../appgraph/serialize';
 import { MigrationGraph } from '../types';
 import {
   AssemblyInput,
+  CustomViewBrief,
   ImpliedDependency,
   ModuleBrief,
   assembleModuleBrief,
@@ -262,6 +266,7 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
   const nodes = reader.getAllNodes();
   const nodeById = new Map<string, Node>(nodes.map((n) => [n.id, n]));
   const moduleIdToNodeIds = assignNodeIdsByModule(nodes, moduleDirs, moduleDirToId);
+  const customViewsByModule = detectCustomViews(reader, moduleIdToNodeIds, nodeById);
 
   // Declared depends_on is the ground truth; lifted coupling is advisory.
   // Test-scoped declared deps (testImplementation/…) are kept apart: they are
@@ -392,7 +397,37 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     appEntriesByModule,
     deeplinksByModule,
     layoutsByScreenId,
+    customViewsByModule,
   };
+}
+
+/**
+ * Detect custom View subclasses (P1-6): a shipped class whose supertype is an
+ * Android View base. Reads each class's source header once (cached per file) and
+ * checks the recovered supertypes — the code graph's `extends` edge can't help
+ * here because the framework View base has no node in the repo's graph.
+ */
+function detectCustomViews(
+  reader: CodeSymbolGraph,
+  moduleIdToNodeIds: Map<string, string[]>,
+  nodeById: Map<string, Node>
+): Map<string, CustomViewBrief[]> {
+  const out = new Map<string, CustomViewBrief[]>();
+  for (const [moduleId, nodeIds] of moduleIdToNodeIds) {
+    const views: CustomViewBrief[] = [];
+    for (const id of nodeIds) {
+      const node = nodeById.get(id);
+      if (!node || node.kind !== 'class') continue;
+      if (node.language !== 'kotlin') continue; // superTypes parses Kotlin headers
+      if (isTestPath(node.filePath) || node.name.startsWith('<')) continue;
+      const code = reader.getCode(node);
+      if (code === null) continue;
+      const viewSuper = superTypes(code).find(isAndroidViewSuper);
+      if (viewSuper) views.push({ name: node.name, superClass: viewSuper, file: node.filePath });
+    }
+    if (views.length > 0) out.set(moduleId, views);
+  }
+  return out;
 }
 
 function asByKind(v: unknown): Record<string, number> {

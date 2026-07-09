@@ -211,7 +211,7 @@ function textOf(r: ToolResult): string {
 // --- tool handler -------------------------------------------------------------
 
 describe('migrate MCP · tools', () => {
-  it('exposes exactly the 9 tools, each with an object schema', () => {
+  it('exposes exactly the 10 tools, each with an object schema', () => {
     expect(MIGRATE_TOOLS.map((t) => t.name)).toEqual([
       'migrate_order',
       'migrate_unit',
@@ -222,6 +222,7 @@ describe('migrate MCP · tools', () => {
       'app_screens',
       'app_nav',
       'app_features',
+      'app_modules',
     ]);
     for (const t of MIGRATE_TOOLS) {
       expect(t.description.length).toBeGreaterThan(20);
@@ -237,6 +238,10 @@ describe('migrate MCP · tools', () => {
     expect(nav).toMatch(/^navigates_to \d+ 条:/);
     const features = textOf(h.execute('app_features', {}));
     expect(features).toMatch(/^Feature \d+ 个:/);
+    const modules = textOf(h.execute('app_modules', {}));
+    expect(modules).toMatch(/^# 模块依赖图/);
+    expect(modules).toContain(':core');
+    expect(modules).toContain(':app');
   });
 
   it('migrate_order lists units bottom-up with planning params', () => {
@@ -398,7 +403,7 @@ describe('migrate MCP · server routing', () => {
 
     await t.emit({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     const tools = (t.results.get(2) as { tools: Array<{ name: string }> }).tools;
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
 
     await t.emit({
       jsonrpc: '2.0',

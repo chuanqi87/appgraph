@@ -360,5 +360,5 @@ function codeNode(
 }
 
 function stubReader(nodes: Node[]): CodeSymbolGraph {
-  return { getAllNodes: () => nodes } as unknown as CodeSymbolGraph;
+  return { getAllNodes: () => nodes, getCode: () => null } as unknown as CodeSymbolGraph;
 }

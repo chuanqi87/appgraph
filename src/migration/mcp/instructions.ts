@@ -26,8 +26,9 @@ export const MIGRATE_SERVER_INSTRUCTIONS = `# migrate — Android→HarmonyOS �
 5. **migrate_ledger** — 查看/回顾各单元迁移状态(状态由 CLI \`migrate ledger set\` 写入)。
    迁移前后务必登记:开始时 \`--status in-progress\`,完成时 \`--status migrated --target-module <m>
    --target-path <前缀> --export <源名=目标名>\`。登记的 targetPath/exportMap 让 verify 精准定位与匹配改名。
-6. **app_screens / app_nav / app_features** — 应用语义总览:屏幕清单+跳转、navigates_to 页面图、
-   功能簇。想从“产品/功能”角度而非工程模块快速看懂这个 App 时用。
+6. **app_modules / app_screens / app_nav / app_features** — 应用总览:模块依赖图全景
+   (角色/层/必要性/符号量/邻接,是 migrate_module_facts 的入口)、屏幕清单+跳转、
+   navigates_to 页面图、功能簇。想从“产品/功能/模块”角度而非单个符号快速看懂这个 App 时用。
 7. 迁移完一个单元后,在源工程运行 \`migrate verify <源> --target <目标工程> --unit <单元>\`(单元级)
    或不带 \`--unit\`(全量),然后用 **migrate_verify_gaps**(带 unit 参数看单元报告)查看缺口。
    单元缺口分三类:**unit-missing**(已登记迁移却缺失,真缺口,必修)、**dependency-missing**
