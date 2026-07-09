@@ -28,6 +28,7 @@ import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
 import { cFnPointerDispatchEdges } from './c-fnptr-synthesizer';
 import { goframeRouteEdges } from './goframe-synthesizer';
+import { androidIntentEdges, composeRouteEdges } from './android-synthesizer';
 import { createYielder, type MaybeYield } from './cooperative-yield';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
@@ -3353,6 +3354,8 @@ export async function synthesizeCallbackEdges(queries: QueryBuilder, ctx: Resolu
   const laravelEdges = laravelEventEdges(ctx); await yieldToLoop();
   const cFnPtrEdges = cFnPointerDispatchEdges(queries, ctx); await yieldToLoop();
   const goframeEdges = goframeRouteEdges(ctx); await yieldToLoop();
+  const androidIntent = androidIntentEdges(ctx); await yieldToLoop();
+  const composeRoutes = composeRouteEdges(ctx); await yieldToLoop();
   const nixOptionEdges = await nixOptionPathEdges(queries, yieldToLoop); await yieldToLoop();
 
   const merged: Edge[] = [];
@@ -3393,6 +3396,8 @@ export async function synthesizeCallbackEdges(queries: QueryBuilder, ctx: Resolu
     ...laravelEdges,
     ...cFnPtrEdges,
     ...goframeEdges,
+    ...androidIntent,
+    ...composeRoutes,
     ...nixOptionEdges,
   ]) {
     const key = `${e.source}>${e.target}`;

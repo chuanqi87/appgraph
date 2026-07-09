@@ -22,6 +22,16 @@ export interface CodeEdge {
   kind: EdgeKind;
 }
 
+/** A synthesized (dynamic-dispatch) edge, carrying its heuristic provenance metadata. */
+export interface SynthesizedEdge {
+  source: string;
+  target: string;
+  kind: EdgeKind;
+  /** `metadata.synthesizedBy` — which synthesizer emitted it (e.g. `compose-route`). */
+  synthesizedBy: string;
+  metadata: Record<string, unknown>;
+}
+
 export class CodeSymbolGraph {
   private constructor(
     private readonly db: DatabaseConnection,
@@ -56,6 +66,35 @@ export class CodeSymbolGraph {
       .prepare('SELECT source, target, kind FROM edges')
       .all() as Array<{ source: string; target: string; kind: string }>;
     return rows.map((r) => ({ source: r.source, target: r.target, kind: r.kind as EdgeKind }));
+  }
+
+  /**
+   * Synthesized (dynamic-dispatch) edges, optionally filtered to specific
+   * `synthesizedBy` tags. Unlike `getAllEdges`, this KEEPS `metadata` — the
+   * app-semantic lift reads the deterministic core edges (compose-route,
+   * android-intent, arkui-route, …) rather than re-scanning source.
+   */
+  getSynthesizedEdges(synthesizedBy?: string[]): SynthesizedEdge[] {
+    const rows = this.db
+      .getDb()
+      .prepare("SELECT source, target, kind, metadata FROM edges WHERE provenance = 'heuristic'")
+      .all() as Array<{ source: string; target: string; kind: string; metadata: string | null }>;
+    const wanted = synthesizedBy ? new Set(synthesizedBy) : null;
+    const out: SynthesizedEdge[] = [];
+    for (const r of rows) {
+      let metadata: Record<string, unknown> = {};
+      if (r.metadata) {
+        try {
+          metadata = JSON.parse(r.metadata) as Record<string, unknown>;
+        } catch {
+          metadata = {};
+        }
+      }
+      const by = typeof metadata.synthesizedBy === 'string' ? metadata.synthesizedBy : '';
+      if (wanted && !wanted.has(by)) continue;
+      out.push({ source: r.source, target: r.target, kind: r.kind as EdgeKind, synthesizedBy: by, metadata });
+    }
+    return out;
   }
 
   /** The underlying prepared-statement layer, for stages that need richer reads. */
