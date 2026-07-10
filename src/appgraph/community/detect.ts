@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import Graph from 'graphology';
 import louvain from 'graphology-communities-louvain';
+import { isBuildFilePath } from '../detect/shared';
 
 // Ported constants from cluster.py — the split/cohesion thresholds.
 const MAX_COMMUNITY_FRACTION = 0.25; // communities larger than 25% of the graph get split
@@ -84,6 +85,13 @@ export function detectCommunities(graph: Graph, opts: DetectOptions = {}): Commu
     communities = resplitCrossModuleGrabBags(communities, graph, opts.moduleOfFile);
   }
 
+  // T1-8: Gradle/build scripts influenced the Louvain partition but are never
+  // product features — drop them from the reported membership (and any community
+  // left empty by the drop) so no Feature is named after a `build.gradle.kts`.
+  communities = communities
+    .map((members) => members.filter((m) => !isBuildFilePath(m)))
+    .filter((members) => members.length > 0);
+
   // Total order: size desc, then lexical by sorted members → stable ids.
   communities.sort(
     (a, b) => b.length - a.length || sortedJoin(a).localeCompare(sortedJoin(b))
@@ -91,11 +99,12 @@ export function detectCommunities(graph: Graph, opts: DetectOptions = {}): Commu
 
   return communities.map((members, id) => {
     const sorted = [...members].sort();
+    const coh = cohesion(graph, sorted);
     return {
       id,
       members: sorted,
-      cohesion: cohesion(graph, sorted),
-      hubName: hubLabel(graph, sorted),
+      cohesion: coh,
+      hubName: hubLabel(graph, sorted, coh, opts.moduleOfFile),
       sig: memberSig(sorted),
     };
   });
@@ -192,11 +201,50 @@ function cohesion(graph: Graph, members: string[]): number {
   return possible > 0 ? actual / possible : 0;
 }
 
-/** Highest-degree member, tie-broken by id; named by its file base (sans ext). */
-function hubLabel(graph: Graph, members: string[]): string {
-  let hub = members[0]!;
+/** Neutral label for a low-trust cross-module grab-bag — naming it after any one
+ *  member would falsely imply a coherent feature. */
+const NEUTRAL_HUB_LABEL = '杂合簇';
+
+/**
+ * Deterministic advisory label for a community.
+ *
+ * The hub is the highest-degree member (tie-broken by id), but chosen only from
+ * the community's PRIMARY module (the one contributing the most members) so a
+ * cross-module cluster is never named after a symbol belonging to a different
+ * subsystem (the auth cluster mis-named `ProductHuntService` bug). A wide + thin
+ * cross-module cluster is a low-trust grab-bag — mirroring the P1-4 re-split
+ * window — and gets a neutral label instead of any member name. Build/script
+ * files are never hub candidates. The label is advisory and never participates
+ * in identity (that is the membership `sig`).
+ */
+function hubLabel(
+  graph: Graph,
+  members: string[],
+  cohesionValue: number,
+  moduleOfFile?: (file: string) => string | undefined
+): string {
+  let candidates = members.filter((m) => !isBuildFilePath(m));
+  if (candidates.length === 0) candidates = members;
+
+  if (moduleOfFile) {
+    const countByModule = new Map<string, number>();
+    for (const m of candidates) {
+      const mod = moduleOfFile(m);
+      if (mod !== undefined) countByModule.set(mod, (countByModule.get(mod) ?? 0) + 1);
+    }
+    if (countByModule.size > MODULE_SPAN_SPLIT && cohesionValue < MODULE_SPAN_COHESION) {
+      return NEUTRAL_HUB_LABEL;
+    }
+    const primary = pickPrimaryModule(countByModule);
+    if (primary !== undefined) {
+      const restricted = candidates.filter((m) => moduleOfFile(m) === primary);
+      if (restricted.length > 0) candidates = restricted;
+    }
+  }
+
+  let hub = candidates[0]!;
   let best = -1;
-  for (const n of members) {
+  for (const n of candidates) {
     const d = graph.degree(n);
     if (d > best || (d === best && n < hub)) {
       best = d;
@@ -204,6 +252,20 @@ function hubLabel(graph: Graph, members: string[]): string {
     }
   }
   return basename(hub).replace(/\.[^.]+$/, '') || hub;
+}
+
+/** The module contributing the most members (ties → lexically smallest key). */
+function pickPrimaryModule(countByModule: Map<string, number>): string | undefined {
+  let primary: string | undefined;
+  let bestCount = -1;
+  for (const mod of [...countByModule.keys()].sort()) {
+    const count = countByModule.get(mod)!;
+    if (count > bestCount) {
+      bestCount = count;
+      primary = mod;
+    }
+  }
+  return primary;
 }
 
 /** sha256(sorted members) first 16 hex — the stable membership fingerprint. */

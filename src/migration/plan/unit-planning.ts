@@ -18,7 +18,10 @@
  *   - SPLIT an oversized single-module unit (above `maxUnitSymbols`) along its
  *     M2 subdivision Features: one sub-unit per Feature (its member files),
  *     plus a remainder sub-unit for the module's uncovered files. Sub-units
- *     order bottom-up along the Feature→Feature depends_on edges.
+ *     order bottom-up along the Feature→Feature depends_on edges. When the
+ *     remainder itself exceeds `maxUnitSymbols`, it is further split by source
+ *     DIRECTORY (bin-packed in sorted dir order) so no single `rest` slice
+ *     stays a monolith.
  *
  * Deliberately NOT part of the graph: `graph.order` is a graph fact that sync
  * preserves and the fingerprint covers; the packing granularity is a plan-time
@@ -159,11 +162,10 @@ export function planUnits(
 
 /**
  * Persist the unit-level scheduling structure: direct `dependsOnUnitIds`
- * (declared module deps projected onto the final units, plus the serial chain
- * between split slices of the same module — same semantics the MCP
- * `unitNeighbors` derives on the fly) and the Kahn `wave` (longest dependency
- * depth). A scheduler can then answer "what can run in parallel" from
- * plan.json alone, without re-deriving the module graph.
+ * (declared module deps projected onto the final units, plus the coupling
+ * between split slices of one module — see `buildSplitSiblingDependency`) and
+ * the Kahn `wave` (longest dependency depth). A scheduler can then answer "what
+ * can run in parallel" from plan.json alone, without re-deriving the graph.
  */
 function annotateUnitDependencies(units: PlannedUnit[], graph: MigrationGraph): void {
   const unitIndexesOfModule = new Map<string, number[]>();
@@ -186,26 +188,77 @@ function annotateUnitDependencies(units: PlannedUnit[], graph: MigrationGraph): 
     }
   }
 
+  // Split slices of one oversized module are coupled by the REAL Feature→Feature
+  // dependency edges (not a blanket "depend on every earlier slice"), so
+  // independent Feature clusters share a wave and migrate in parallel.
+  const siblingDependsOn = buildSplitSiblingDependency(units, graph);
+
   // Deps always sit at earlier orders (orderPlannedUnits emits deps first;
-  // split keeps slices in place), so scanning j < i both finds every edge and
+  // trySplit emits a Feature slice before every slice that depends on it and
+  // the `rest` glue last), so scanning j < i both finds every edge and
   // guarantees the persisted structure is a DAG by construction.
   const waves: number[] = [];
   for (let i = 0; i < units.length; i++) {
     const unit = units[i]!;
     const depIndexes: number[] = [];
     for (let j = 0; j < i; j++) {
-      const other = units[j]!;
-      const splitSiblings =
-        unit.moduleIds.length === 1 &&
-        other.moduleIds.length === 1 &&
-        unit.moduleIds[0] === other.moduleIds[0];
-      if (splitSiblings || depPairs.has(`${i}>${j}`)) depIndexes.push(j);
+      if (siblingDependsOn(i, j) || depPairs.has(`${i}>${j}`)) depIndexes.push(j);
     }
     const wave = depIndexes.reduce((mx, j) => Math.max(mx, waves[j]! + 1), 0);
     waves.push(wave);
     unit.wave = wave;
     unit.dependsOnUnitIds = depIndexes.map((j) => units[j]!.id).sort();
   }
+}
+
+/**
+ * "Does split slice i depend on split slice j" for two slices of the SAME
+ * oversized module. A Feature slice depends on another Feature slice iff the app
+ * graph carries a Feature→Feature `depends_on` edge between them (the exact
+ * coupling `orderFeatures` uses to order them). A `rest` glue slice depends on
+ * every Feature slice of its module (glue migrates after the features it wires);
+ * Feature slices never depend on a rest slice, and rest slices — including the
+ * per-directory slices an oversized `rest` splits into — never depend on each
+ * other. Slices of different modules, and non-split units, are handled by the
+ * declared-dependency projection, so this returns false for them.
+ */
+function buildSplitSiblingDependency(
+  units: PlannedUnit[],
+  graph: MigrationGraph
+): (i: number, j: number) => boolean {
+  // (moduleId \0 featureSig) → Feature node id for every split-eligible Feature.
+  const featureNodeBySig = new Map<string, string>();
+  for (const n of graph.nodes) {
+    if (n.kind !== 'Feature' || n.subtype !== 'subdivision') continue;
+    const span = Array.isArray(n.attrs?.moduleSpan) ? (n.attrs!.moduleSpan as string[]) : [];
+    if (span.length !== 1) continue;
+    const sig = typeof n.attrs?.sig === 'string' ? n.attrs.sig : n.id;
+    featureNodeBySig.set(`${span[0]}\0${sig}`, n.id);
+  }
+  const featureNodeIds = new Set(featureNodeBySig.values());
+  const featureDepEdges = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.kind !== 'depends_on') continue;
+    if (featureNodeIds.has(e.from) && featureNodeIds.has(e.to)) featureDepEdges.add(`${e.from}\0${e.to}`);
+  }
+
+  // A split slice's Feature node id, or undefined for a `rest` slice.
+  const featureIdOf = (u: PlannedUnit): string | undefined =>
+    u.kind === 'split' && u.featureSig !== undefined
+      ? featureNodeBySig.get(`${u.moduleIds[0]}\0${u.featureSig}`)
+      : undefined;
+
+  return (i: number, j: number): boolean => {
+    const a = units[i]!;
+    const b = units[j]!;
+    if (a.kind !== 'split' || b.kind !== 'split' || a.moduleIds[0] !== b.moduleIds[0]) return false;
+    const fa = featureIdOf(a);
+    const fb = featureIdOf(b);
+    if (fa !== undefined && fb !== undefined) return featureDepEdges.has(`${fa}\0${fb}`);
+    // a is a rest slice → depends on every Feature slice; feature→rest and
+    // rest→rest carry no dependency.
+    return fa === undefined && fb !== undefined;
+  };
 }
 
 // =============================================================================
@@ -328,10 +381,14 @@ function mergeSmallUnitsOnePass(
   const reachable = reachabilitySets(units.length, deps);
   const hasPath = (a: number, b: number): boolean => reachable[a]!.has(b) || reachable[b]!.has(a);
 
+  // The bin key includes the dev-only dimension so a product unit and a
+  // dev-support unit never pack into the same bin (nia's designsystem+lint) — a
+  // dev-only unit ships nothing and belongs on its own track (T1-10). The
+  // dependent-set (used to name a fold owner) is the part AFTER the `\0` tag.
   const groups = new Map<string, number[]>();
   units.forEach((u, i) => {
     if (u.symbolCount >= opts.minUnitSymbols) return;
-    const key = effectiveDependents(i).join(',');
+    const key = `${u.devOnly ? '1' : '0'}\0${effectiveDependents(i).join(',')}`;
     const list = groups.get(key) ?? [];
     list.push(i);
     groups.set(key, list);
@@ -379,12 +436,19 @@ function mergeSmallUnitsOnePass(
     // node provably safe, and it correctly declines a fold for a member that
     // turns out to have no real edge to the candidate at all (e.g. a fully
     // unreferenced unit sharing the empty key by coincidence).
-    const parts = key === '' ? [] : key.split(',').map(Number);
+    const binDevOnly = key.charAt(0) === '1';
+    const depSet = key.slice(key.indexOf('\0') + 1);
+    const parts = depSet === '' ? [] : depSet.split(',').map(Number);
     const candidate = parts.length === 1 ? parts[0]! : parts.length === 0 ? soleRoot : undefined;
 
     for (const b of bins) {
       const owner =
-        candidate !== undefined && !consumed.has(candidate) && b.every((m) => deps.get(candidate)!.has(m))
+        candidate !== undefined &&
+        !consumed.has(candidate) &&
+        // Keep the necessity tracks apart: never fold a dev-only bin into a
+        // product owner (or vice versa) — that would re-mix what the key split (T1-10).
+        units[candidate]!.devOnly === binDevOnly &&
+        b.every((m) => deps.get(candidate)!.has(m))
           ? candidate
           : undefined;
       if (owner !== undefined) {
@@ -549,24 +613,92 @@ function trySplit(
     });
   }
 
-  // Remainder: the module's files no subdivision Feature covers (glue last).
+  // Remainder: the module's files no subdivision Feature covers (glue last). An
+  // oversized remainder is re-split by source directory so it isn't one monolith.
   const rest = (filesByModuleId.get(moduleId) ?? []).filter((f) => !covered.has(f)).sort();
-  if (rest.length > 0) {
+  for (const slice of subdivideRest(rest, opts, countSymbols)) {
     subUnits.push({
-      id: splitUnitId(moduleId, 'rest'),
+      id: splitUnitId(moduleId, slice.sig),
       order: 0,
-      label: `${unit.label}#rest`,
+      label: `${unit.label}#${slice.label}`,
       kind: 'split',
       cyclic: false,
       moduleIds: [moduleId],
-      featureSig: 'rest',
-      files: rest,
-      symbolCount: countSymbols(rest),
+      featureSig: slice.sig,
+      files: slice.files,
+      symbolCount: countSymbols(slice.files),
       wave: 0,
       dependsOnUnitIds: [],
     });
   }
   return subUnits;
+}
+
+/** One remainder ("rest") slice: its stable sig, display label, and files. */
+interface RestSlice {
+  sig: string;
+  label: string;
+  files: string[];
+}
+
+/**
+ * Slice the module's uncovered `rest` files. Under `maxUnitSymbols` (or when it
+ * degenerates to a single group) it stays ONE `rest` slice — byte-identical to
+ * the pre-P3.4 behavior. An oversized remainder is bin-packed by SOURCE
+ * DIRECTORY: directories are accumulated in sorted order and flushed whenever
+ * adding the next would overflow the threshold (a lone over-threshold directory
+ * becomes its own slice). Deterministic — directory-name sorted — and each
+ * slice's sig is derived from its first (sorted) directory, unique across slices
+ * since the sorted directories partition contiguously.
+ */
+function subdivideRest(
+  rest: string[],
+  opts: PlanningOptions,
+  countSymbols: (files: string[]) => number
+): RestSlice[] {
+  if (rest.length === 0) return [];
+  const wholeRest: RestSlice = { sig: 'rest', label: 'rest', files: rest };
+  if (countSymbols(rest) <= opts.maxUnitSymbols) return [wholeRest];
+
+  const byDir = new Map<string, string[]>();
+  for (const f of rest) {
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '';
+    const list = byDir.get(dir) ?? [];
+    list.push(f);
+    byDir.set(dir, list);
+  }
+
+  const slices: RestSlice[] = [];
+  let binKey: string | null = null;
+  let binFiles: string[] = [];
+  let binSize = 0;
+  const flush = (): void => {
+    if (binFiles.length === 0 || binKey === null) return;
+    slices.push({ sig: `rest:${binKey}`, label: `rest/${restDirLabel(binKey)}`, files: [...binFiles].sort() });
+    binKey = null;
+    binFiles = [];
+    binSize = 0;
+  };
+  for (const dir of [...byDir.keys()].sort()) {
+    const files = byDir.get(dir)!;
+    const size = countSymbols(files);
+    if (binFiles.length > 0 && binSize + size > opts.maxUnitSymbols) flush();
+    if (binKey === null) binKey = dir;
+    binFiles.push(...files);
+    binSize += size;
+  }
+  flush();
+
+  // A single-bin outcome (e.g. one oversized directory) reads better as the
+  // plain `rest` slice — keeps the common label the same across consumers.
+  return slices.length <= 1 ? [wholeRest] : slices;
+}
+
+/** Readable label for a rest directory: the package tail after `src/…/java|kotlin/`, dotted. */
+function restDirLabel(dir: string): string {
+  if (dir === '') return 'root';
+  const m = /(?:^|\/)src\/[^/]+\/(?:java|kotlin)\/(.+)$/.exec(dir);
+  return (m ? m[1]! : dir).replace(/\//g, '.');
 }
 
 /** Bottom-up over Feature→Feature depends_on; ties by size desc, then sig. */

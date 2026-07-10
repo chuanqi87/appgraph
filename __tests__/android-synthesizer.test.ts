@@ -210,6 +210,32 @@ class FeedFragment
     expect(synthPairs(reader!, ['android-fragment']).filter((p) => p.to === 'FeedFragment')).toEqual([]);
   });
 
+  it('links string-tag dispatch loadFragment(XxxFragment.TAG) to the target Fragment (AntennaPod)', async () => {
+    ({ root, reader } = await indexProject({
+      'app/src/main/java/com/x/MainActivity.java': `package com.x;
+public class MainActivity {
+  public void openHome() { loadFragment(HomeFragment.TAG, null); }
+  public void openQueue() { loadFragment(createFragmentInstance(QueueFragment.TAG, null)); }
+  public void dynamic(String tag) { loadFragment(tag, null); }   // dynamic — dropped
+  public String label(String tag) {
+    switch (tag) { case HomeFragment.TAG: return "home"; }        // case label — not a nav
+    return "";
+  }
+  public void loadFragment(String tag, Object args) {}
+  public Object createFragmentInstance(String tag, Object args) { return null; }
+}
+class HomeFragment {}
+class QueueFragment {}
+`,
+    }));
+    const pairs = synthPairs(reader!, ['android-fragment']);
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'openHome', to: 'HomeFragment' });
+    expect(pairs).toContainEqual({ by: 'android-fragment', from: 'openQueue', to: 'QueueFragment' });
+    // A dynamic tag and a `case XxxFragment.TAG:` label never fabricate an edge.
+    expect(pairs.some((p) => p.from === 'dynamic')).toBe(false);
+    expect(pairs.some((p) => p.from === 'label')).toBe(false);
+  });
+
   it('precision: a plain .show() on a non-constructor receiver emits nothing', async () => {
     ({ root, reader } = await indexProject({
       'app/src/main/java/com/x/Toast.kt': `package com.x

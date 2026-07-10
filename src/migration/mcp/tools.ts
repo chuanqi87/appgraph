@@ -24,6 +24,7 @@ import { readLedger, Ledger, LedgerEntry } from '../ledger';
 import {
   emptyLabelStore,
   LABEL_SUMMARY_MAX,
+  LabelEntry,
   LabelStore,
   readLabelStore,
   validateLabel,
@@ -174,9 +175,9 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
   {
     name: 'migrate_label',
     description:
-      '【写入】回填功能簇(Feature)或迁移单元的语义标注 —— 你可另起一个分析 Agent 读源码/工单后,把“语义名 + 一句话功能描述”写回。这是唯一的写入通道,受严格质量校验(summary 必填、单行、≤' +
+      '【写入】回填功能簇(Feature)或迁移单元的语义标注 —— 你可另起一个分析 Agent 读源码/工单后,把“语义名 + 功能与迁移要点说明”写回。这是唯一的写入通道,只做轻量校验(summary 必填、≤' +
       LABEL_SUMMARY_MAX +
-      ' 字;target 必须命中真实 Feature/单元),不合格只返回引导不写入。标注存于 sidecar(provenance=llm),不进确定性图谱/指纹,仅用于展示。',
+      ' 字,允许多行;target 必须命中真实 Feature/单元),不合格只返回引导不写入。标注存于 sidecar(provenance=llm),不进确定性图谱/指纹,仅用于展示。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -185,8 +186,11 @@ export const MIGRATE_TOOLS: MigrateToolDef[] = [
           type: 'string',
           description: 'feature:Feature 的 sig 或 hub 名;unit:单元序号/id/label/成员模块名',
         },
-        name: { type: 'string', description: '(可选)语义名,≤60 字,单行' },
-        summary: { type: 'string', description: '一句话功能描述(必填,单行,≤' + LABEL_SUMMARY_MAX + ' 字)' },
+        name: { type: 'string', description: '(可选)语义名,≤60 字,单行短标题' },
+        summary: {
+          type: 'string',
+          description: '功能与迁移要点说明(必填,≤' + LABEL_SUMMARY_MAX + ' 字,可多行)',
+        },
         ...PROJECT_PATH_PROP,
       },
       required: ['target', 'key', 'summary'],
@@ -312,10 +316,10 @@ export class MigrateToolHandler {
     const labels = readLabelStore(getLabelsPath(root));
     lines.push('');
     for (const u of plan.units) {
-      const label = labels?.units[u.id];
-      const ai = label ? ` 〔AI:${label.name ? `${label.name} — ` : ''}${label.summary}〕` : '';
-      lines.push(
-        `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount}${tokenNote(u)}${ai} → ${u.briefFile}`
+      pushWithAiLabel(
+        lines,
+        `${String(u.order + 1).padStart(3)}. ${u.label}${unitMark(u)} · 符号 ${u.symbolCount}${tokenNote(u)} → ${u.briefFile}`,
+        labels?.units[u.id]
       );
     }
     lines.push('');
@@ -696,9 +700,8 @@ export class MigrateToolHandler {
       // not to treat it as one coherent feature.
       const weak = f.attrs?.weak === true ? ' ⚠低置信(跨模块杂合,勿当作单一功能)' : '';
       const label = labels?.features[String(f.attrs?.sig ?? '')];
-      const ai = label ? ` 〔AI:${label.name ? `${label.name} — ` : ''}${label.summary}〕` : '';
       if (label) labelled++;
-      lines.push(`  · ${f.name}${weak}${ai}${ms.length ? `: ${ms.join(', ')}` : ''}`);
+      pushWithAiLabel(lines, `  · ${f.name}${weak}${ms.length ? `: ${ms.join(', ')}` : ''}`, label);
     }
     if (labels && labelled < Math.min(features.length, MAX_LIST)) {
       lines.push('提示:未标注的功能簇可另起分析 Agent 用 migrate_label 回填语义名/描述。');
@@ -831,6 +834,25 @@ export class MigrateToolHandler {
 
 function byName(a: AppNode, b: AppNode): number {
   return a.name.localeCompare(b.name);
+}
+
+/**
+ * Append an optional `migrate_label` AI annotation after a fact line. A
+ * single-line summary stays inline (`〔AI:name — summary〕`); a multi-line one
+ * renders as an indented block below so the fact line itself stays scannable.
+ */
+function pushWithAiLabel(lines: string[], header: string, label: LabelEntry | undefined): void {
+  if (!label) {
+    lines.push(header);
+    return;
+  }
+  const summaryLines = label.summary.split('\n');
+  if (summaryLines.length === 1) {
+    lines.push(`${header} 〔AI:${label.name ? `${label.name} — ` : ''}${summaryLines[0]}〕`);
+    return;
+  }
+  lines.push(`${header} 〔AI:${label.name ?? '…'}〕`);
+  for (const l of summaryLines) lines.push(`      ${l}`);
 }
 
 // =============================================================================

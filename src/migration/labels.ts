@@ -8,9 +8,13 @@
  * for DISPLAY only.
  *
  * The calling AI runs the analysis (a dedicated sub-agent) and writes results
- * back through the `migrate_label` MCP tool, which routes every write through
- * `validateLabel` — a strict quality gate — so the sidecar can never accumulate
- * junk (over-long, control chars, or labels for targets that don't exist).
+ * back through the `migrate_label` MCP tool (or the `migrate label` CLI, same
+ * handler), which routes every write through `validateLabel`. The gate is kept
+ * DELIBERATELY LIGHT — it only rejects what would actually break the sidecar
+ * (empty content, unbounded length, raw control bytes, or a target that doesn't
+ * resolve) — not stylistic constraints. `summary` may span multiple lines: a
+ * short paragraph of functional + migration notes reads better than one
+ * run-on sentence.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -21,12 +25,12 @@ export const LABELS_SCHEMA_VERSION = 1;
 
 /** Quality bounds — enforced on every write. */
 export const LABEL_NAME_MAX = 60;
-export const LABEL_SUMMARY_MAX = 280;
+export const LABEL_SUMMARY_MAX = 2000;
 
 export interface LabelEntry {
-  /** Optional short semantic name (≤ LABEL_NAME_MAX). */
+  /** Optional short single-line semantic name (≤ LABEL_NAME_MAX). */
   name?: string;
-  /** One-line functional description (1..LABEL_SUMMARY_MAX). */
+  /** Functional + migration-notes description (1..LABEL_SUMMARY_MAX); multi-line OK. */
   summary: string;
   /** Always 'llm' — the provenance marker (this store never holds derived facts). */
   provenance: 'llm';
@@ -64,19 +68,23 @@ export interface LabelInput {
 }
 
 /**
- * Strict quality gate. Returns the normalized entry, or an error MESSAGE (the
+ * Light quality gate. Returns the normalized entry, or an error MESSAGE (the
  * caller surfaces it as success-shaped guidance — a rejected write is
- * "fix your input", never a server malfunction). Rejects: empty/whitespace
- * summary, over-length name/summary, and any control character (newlines/tabs
- * included — a label is a single display line).
+ * "fix your input", never a server malfunction). Rejects only what would
+ * break the sidecar or its display: empty/whitespace summary, over-length
+ * name/summary, and raw control bytes other than newline/tab in `summary`
+ * (newline/tab ARE allowed there — a multi-line analysis is fine). `name`
+ * stays a single-line short title, so it rejects newlines/tabs too.
  */
 export function validateLabel(input: LabelInput): { entry: LabelEntry } | { error: string } {
   const summary = (input.summary ?? '').trim();
-  if (summary.length === 0) return { error: 'summary 为空,未写入(需一句话功能描述)。' };
+  if (summary.length === 0) return { error: 'summary 为空,未写入(需功能描述)。' };
   if (summary.length > LABEL_SUMMARY_MAX) {
-    return { error: `summary 长度 ${summary.length} 超过上限 ${LABEL_SUMMARY_MAX},未写入(请精简为一句话)。` };
+    return { error: `summary 长度 ${summary.length} 超过上限 ${LABEL_SUMMARY_MAX},未写入(请精简)。` };
   }
-  if (hasControlChar(summary)) return { error: 'summary 含换行/控制字符,未写入(须为单行文本)。' };
+  if (hasDisallowedControlChar(summary, { allowNewline: true })) {
+    return { error: 'summary 含不可见控制字符,未写入。' };
+  }
 
   let name: string | undefined;
   if (input.name !== undefined) {
@@ -84,8 +92,8 @@ export function validateLabel(input: LabelInput): { entry: LabelEntry } | { erro
     if (name.length === 0) name = undefined;
     else if (name.length > LABEL_NAME_MAX) {
       return { error: `name 长度 ${name.length} 超过上限 ${LABEL_NAME_MAX},未写入。` };
-    } else if (hasControlChar(name)) {
-      return { error: 'name 含换行/控制字符,未写入。' };
+    } else if (hasDisallowedControlChar(name)) {
+      return { error: 'name 含换行/控制字符,未写入(须为单行短标题)。' };
     }
   }
 
@@ -99,10 +107,15 @@ export function validateLabel(input: LabelInput): { entry: LabelEntry } | { erro
   };
 }
 
-/** True if the string carries any C0/C1 control char — a label must be one line. */
-function hasControlChar(s: string): boolean {
+/**
+ * True if the string carries a control byte that has no business in a label —
+ * everything C0/C1 except (optionally) newline/tab, which a multi-line
+ * `summary` is now allowed to use.
+ */
+function hasDisallowedControlChar(s: string, opts: { allowNewline?: boolean } = {}): boolean {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
+    if (opts.allowNewline && (c === 0x0a || c === 0x09)) continue;
     if (c < 0x20 || (c >= 0x7f && c <= 0x9f)) return true;
   }
   return false;

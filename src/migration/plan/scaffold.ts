@@ -40,8 +40,12 @@ function aggregate(plan: MigrationPlan): {
   permissions: string[];
 } {
   const routes: RouteRow[] = [];
-  const dataModels: Array<{ name: string; module: string }> = [];
-  const background: Array<{ name: string; subtype: string; module: string }> = [];
+  // A module split into N slices carries its (un-sliceable) module-level facts on
+  // EVERY slice's brief, so background components / data models would be pushed N
+  // times (koler's CallService×9). Dedup by a stable key — the same discipline
+  // appEntries/deeplinks/permissions already use via Set (T1-1).
+  const dataModels = new Map<string, { name: string; module: string }>();
+  const background = new Map<string, { name: string; subtype: string; module: string }>();
   const appEntries = new Set<string>();
   const deeplinks = new Set<string>();
   const permissions = new Set<string>();
@@ -49,11 +53,21 @@ function aggregate(plan: MigrationPlan): {
   for (const unit of plan.units) {
     for (const m of unit.modules) {
       for (const s of m.screens) {
+        // An xml-layout is a view resource, not a navigable route (a hosted one
+        // is already folded into its host's `layouts`; a standalone one would
+        // otherwise inflate the route table) — keep it out of the table (T1-6c).
+        if (s.subtype === 'xml-layout') continue;
         routes.push({ screen: s.name, module: m.moduleName, unitOrder: unit.order, navigatesTo: s.navigatesTo });
       }
-      for (const d of m.dataModels) dataModels.push({ name: d.name, module: m.moduleName });
+      for (const d of m.dataModels) {
+        const key = `${d.name}\0${m.moduleName}`;
+        if (!dataModels.has(key)) dataModels.set(key, { name: d.name, module: m.moduleName });
+      }
       for (const b of m.backgroundComponents) {
-        background.push({ name: b.name, subtype: b.subtype, module: m.moduleName });
+        const key = `${b.name}\0${b.subtype}\0${m.moduleName}`;
+        if (!background.has(key)) {
+          background.set(key, { name: b.name, subtype: b.subtype, module: m.moduleName });
+        }
       }
       for (const e of m.appEntries) appEntries.add(e);
       for (const dl of m.deeplinks) deeplinks.add(dl);
@@ -61,12 +75,17 @@ function aggregate(plan: MigrationPlan): {
     }
   }
   routes.sort((a, b) => a.screen.localeCompare(b.screen));
-  dataModels.sort((a, b) => a.name.localeCompare(b.name));
-  background.sort((a, b) => a.name.localeCompare(b.name));
   return {
     routes,
-    dataModels,
-    background,
+    dataModels: [...dataModels.values()].sort(
+      (a, b) => a.name.localeCompare(b.name) || a.module.localeCompare(b.module)
+    ),
+    background: [...background.values()].sort(
+      (a, b) =>
+        a.name.localeCompare(b.name) ||
+        a.subtype.localeCompare(b.subtype) ||
+        a.module.localeCompare(b.module)
+    ),
     appEntries: [...appEntries].sort(),
     deeplinks: [...deeplinks].sort(),
     permissions: [...permissions].sort(),

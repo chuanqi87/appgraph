@@ -14,17 +14,32 @@
 
 import { AppEdge, CoverageWarning, makeEdgeId } from '../schema';
 import { Node } from '../../types';
-import { functionParts, hasInjectConstructor, leadingAnnotations, parsePrimaryConstructor } from './kotlin-source';
+import {
+  annotationArg,
+  expressionBodyType,
+  functionParts,
+  hasInjectConstructor,
+  leadingAnnotations,
+  parsePrimaryConstructor,
+  superTypes,
+} from './kotlin-source';
 import { DetectContext, isShippableJvmNode, ReadCode } from './shared';
 
 /** DI assembly facts for one ArchModule (attached to its attrs by the orchestrator). */
 export interface DiFacts {
-  /** @Module class/object names in this module. */
+  /** The source-side DI framework fingerprinted from imports (Hilt/Dagger/Koin/
+   *  Metro/Anvil), or `manual` when constructor injection is hand-wired. */
+  framework?: string;
+  /** @Module class/object names in this module (+ @ContributesTo module facades). */
   modules: string[];
   /** Types produced via @Provides. */
   provides: string[];
-  /** Interface←impl bindings via @Binds. */
-  binds: Array<{ iface: string; impl: string }>;
+  /**
+   * Interface←impl bindings. `via` records the mechanism (`@Binds` or an
+   * Anvil/Metro `@Contributes*`); `multibinding` marks a set/map contribution
+   * (`@ContributesMultibinding`/`@ContributesIntoSet`/`@ContributesIntoMap`).
+   */
+  binds: Array<{ iface: string; impl: string; via?: string; multibinding?: boolean }>;
   /** Injection points: a consumer and the types it is constructed with. */
   injectionPoints: Array<{ name: string; injects: string[] }>;
   /** Hilt component scopes seen (@InstallIn). */
@@ -43,6 +58,7 @@ const DI_KINDS = new Set(['class', 'function', 'method']);
 /** Detect the DI object graph. */
 export function detectDi(nodes: Node[], readCode: ReadCode, ctx: DetectContext): DiResult {
   const typeToModule = buildTypeIndex(nodes, ctx);
+  const framework = detectDiFramework(nodes);
   const facts = new Map<string, DiFacts>();
   const edgeById = new Map<string, AppEdge>();
   const warnings: CoverageWarning[] = [];
@@ -81,14 +97,20 @@ export function detectDi(nodes: Node[], readCode: ReadCode, ctx: DetectContext):
       const parts = functionParts(code);
       const f = factsFor(moduleId);
       if (anno.includes('Binds') && parts.returnType && parts.paramTypes[0]) {
-        f.binds.push({ iface: parts.returnType, impl: parts.paramTypes[0] });
+        f.binds.push({ iface: parts.returnType, impl: parts.paramTypes[0], via: '@Binds' });
         providerCount++;
         wire(edgeById, moduleId, parts.returnType, typeToModule, 'binds');
         wire(edgeById, moduleId, parts.paramTypes[0], typeToModule, 'binds');
-      } else if (parts.returnType) {
-        pushUnique(f.provides, parts.returnType);
-        providerCount++;
-        wire(edgeById, moduleId, parts.returnType, typeToModule, 'provides');
+      } else {
+        // @Provides: prefer the explicit return type, else the type constructed in
+        // an expression body (`fun x() = SomeImpl(...)`) — which functionParts
+        // leaves null, so the provider was silently dropped before P3.2a.
+        const provided = parts.returnType ?? (anno.includes('Provides') ? expressionBodyType(code) : null);
+        if (provided) {
+          pushUnique(f.provides, provided);
+          providerCount++;
+          wire(edgeById, moduleId, provided, typeToModule, 'provides');
+        }
       }
       continue;
     }
@@ -103,10 +125,31 @@ export function detectDi(nodes: Node[], readCode: ReadCode, ctx: DetectContext):
       injectionPoints++;
       for (const t of injects) wire(edgeById, moduleId, t, typeToModule, 'injects');
     }
+
+    // Auto-contributed bindings (Anvil/Metro): `@ContributesBinding` on an impl
+    // class is a `iface ← impl` binding; the multibinding variants mark a set/map
+    // contribution. Independent of the @Inject block above — an impl class is
+    // usually both an injection point AND a contributed binding.
+    if (node.kind === 'class') {
+      const bind = contributedBinding(code, node.name, anno);
+      if (bind) {
+        factsFor(moduleId).binds.push(bind);
+        providerCount++;
+        wire(edgeById, moduleId, bind.iface, typeToModule, 'contributes');
+        wire(edgeById, moduleId, bind.impl, typeToModule, 'contributes');
+      }
+      // `@ContributesTo(Scope::class)` contributes a module/component facade to a
+      // scope — record the type so it reads as a DI module of this ArchModule.
+      if (anno.includes('ContributesTo')) pushUnique(factsFor(moduleId).modules, node.name);
+    }
   }
 
-  // Sort each module's fact lists for determinism.
-  for (const [moduleId, f] of facts) facts.set(moduleId, sortFacts(f));
+  // Stamp the fingerprinted framework onto every module that carries DI facts,
+  // then sort each module's fact lists for determinism.
+  for (const [moduleId, f] of facts) {
+    f.framework = framework;
+    facts.set(moduleId, sortFacts(f));
+  }
 
   return {
     diByModule: facts,
@@ -186,12 +229,103 @@ function asArray(v: unknown): string[] {
 
 function sortFacts(f: DiFacts): DiFacts {
   return {
-    modules: [...f.modules].sort(),
+    ...(f.framework ? { framework: f.framework } : {}),
+    modules: [...new Set(f.modules)].sort(),
     provides: [...f.provides].sort(),
-    binds: [...f.binds].sort((a, b) => a.iface.localeCompare(b.iface) || a.impl.localeCompare(b.impl)),
+    binds: dedupBinds(f.binds).sort(
+      (a, b) =>
+        a.iface.localeCompare(b.iface) ||
+        a.impl.localeCompare(b.impl) ||
+        (a.via ?? '').localeCompare(b.via ?? '')
+    ),
     injectionPoints: [...f.injectionPoints]
       .map((p) => ({ name: p.name, injects: [...p.injects].sort() }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     scopes: [...f.scopes].sort(),
   };
+}
+
+/** Dedup bindings by (iface, impl, via) — the same binding can surface twice. */
+function dedupBinds(binds: DiFacts['binds']): DiFacts['binds'] {
+  const seen = new Map<string, DiFacts['binds'][number]>();
+  for (const b of binds) {
+    const key = `${b.iface}\0${b.impl}\0${b.via ?? ''}`;
+    if (!seen.has(key)) seen.set(key, b);
+  }
+  return [...seen.values()];
+}
+
+/**
+ * The source-side DI framework, fingerprinted from import FQNs (the strongest,
+ * most deterministic signal). Precedence resolves the mixed-import case (e.g. a
+ * codebase migrating dagger→metro keeps stray `dagger.*` imports): the more
+ * specific/active framework wins. `manual` = constructor injection with no
+ * framework (only `javax.inject`/`jakarta.inject`, or none at all).
+ */
+export function detectDiFramework(nodes: Node[]): string {
+  let hilt = false;
+  let metro = false;
+  let anvil = false;
+  let koin = false;
+  let dagger = false;
+  for (const n of nodes) {
+    if (n.kind !== 'import') continue;
+    const fq = n.name;
+    if (fq.startsWith('dagger.hilt')) hilt = true;
+    else if (fq.startsWith('dev.zacsweers.metro')) metro = true;
+    else if (fq.startsWith('com.squareup.anvil')) anvil = true;
+    else if (fq.startsWith('org.koin')) koin = true;
+    else if (fq.startsWith('dagger')) dagger = true;
+  }
+  if (hilt) return 'Hilt';
+  if (metro) return 'Metro';
+  if (anvil) return 'Anvil';
+  if (koin) return 'Koin';
+  if (dagger) return 'Dagger';
+  return 'manual';
+}
+
+const CONTRIBUTES_MULTIBINDING = ['ContributesMultibinding', 'ContributesIntoSet', 'ContributesIntoMap'];
+
+/**
+ * The binding an Anvil/Metro `@Contributes*` annotation declares on an impl
+ * class, or null if the class carries none. The interface is read from the
+ * annotation's `boundType`/`binding` argument when present, else falls back to
+ * the class's first declared supertype (the interface it implements).
+ */
+function contributedBinding(
+  code: string,
+  className: string,
+  anno: string[]
+): DiFacts['binds'][number] | null {
+  const isBinding = anno.includes('ContributesBinding');
+  const multiAnno = anno.find((a) => CONTRIBUTES_MULTIBINDING.includes(a));
+  if (!isBinding && !multiAnno) return null;
+  const via = isBinding ? 'ContributesBinding' : multiAnno!;
+  const iface = contributedIface(code, via) ?? superTypes(code)[0] ?? null;
+  if (!iface) return null;
+  return {
+    iface: baseTypeName(iface),
+    impl: className,
+    via: `@${via}`,
+    ...(isBinding ? {} : { multibinding: true }),
+  };
+}
+
+/** The bound interface named in a `@Contributes*` argument, or null. */
+function contributedIface(code: string, annotation: string): string | null {
+  const boundType = annotationArg(code, annotation, 'boundType');
+  if (boundType) return stripClassRef(boundType);
+  // Metro's `binding = binding<Iface>()` form.
+  const binding = annotationArg(code, annotation, 'binding');
+  if (binding) {
+    const m = /<\s*([A-Za-z_][\w.]*)/.exec(binding);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
+/** `Iface::class` / `Iface::class.java` → `Iface`. */
+function stripClassRef(v: string): string {
+  return v.replace(/::class(\s*\.\s*java)?\s*$/, '').trim();
 }

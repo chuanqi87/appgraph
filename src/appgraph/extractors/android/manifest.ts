@@ -217,13 +217,11 @@ class ManifestContext {
       if (actions.includes(ACTION_MAIN) && categories.includes(CATEGORY_LAUNCHER)) isLauncher = true;
       if (actions.includes(ACTION_VPN)) isVpn = true;
 
-      // Deep link: VIEW + BROWSABLE + <data scheme>.
+      // Deep link: VIEW + BROWSABLE + <data>. The `<data>` attributes of one
+      // intent-filter MERGE (Android matches the cross-product), so aggregate the
+      // whole filter — scheme × host × path — rather than reading one element.
       if (actions.includes(ACTION_VIEW) && categories.includes(CATEGORY_BROWSABLE)) {
-        for (const data of childrenNamed(filter, 'data')) {
-          const scheme = data.attrs['android:scheme'];
-          if (!scheme) continue;
-          this.exposeResource(nodeId, scheme, data.attrs['android:host']);
-        }
+        this.exposeDeepLinks(nodeId, filter);
       }
     }
 
@@ -249,20 +247,81 @@ class ManifestContext {
     });
   }
 
-  private exposeResource(fromId: string, scheme: string, host?: string): void {
-    const matchKey = resourceMatchKey(scheme, host);
+  /** `<data>` path-spec attributes, in Android precedence order. */
+  private static readonly PATH_ATTRS: ReadonlyArray<[string, string]> = [
+    ['android:path', 'path'],
+    ['android:pathPrefix', 'pathPrefix'],
+    ['android:pathPattern', 'pathPattern'],
+    ['android:pathSuffix', 'pathSuffix'],
+    ['android:pathAdvancedPattern', 'pathAdvancedPattern'],
+  ];
+
+  /**
+   * Aggregate one intent-filter's `<data>` elements into structured deep links.
+   * Android merges the filter's `<data>` attributes (matching the cross-product
+   * of schemes × hosts × paths), so a split `<data scheme>…<data host>…<data
+   * pathPrefix>` and a combined single `<data scheme host pathPrefix>` yield the
+   * same links. A filter with no scheme cannot form a resolvable URI → skipped.
+   */
+  private exposeDeepLinks(fromId: string, filter: XmlElement): void {
+    const schemes = new Set<string>();
+    const hosts = new Set<string>();
+    const paths: Array<{ type: string; value: string }> = [];
+    const mimeTypes = new Set<string>();
+    for (const data of childrenNamed(filter, 'data')) {
+      const scheme = data.attrs['android:scheme'];
+      if (scheme) schemes.add(scheme);
+      const host = data.attrs['android:host'];
+      if (host) hosts.add(host);
+      for (const [attr, type] of ManifestContext.PATH_ATTRS) {
+        const value = data.attrs[attr];
+        if (value) paths.push({ type, value });
+      }
+      const mime = data.attrs['android:mimeType'];
+      if (mime) mimeTypes.add(mime);
+    }
+    if (schemes.size === 0) return;
+
+    const hostList: Array<string | undefined> = hosts.size > 0 ? [...hosts].sort() : [undefined];
+    const pathList: Array<{ type: string; value: string } | undefined> =
+      paths.length > 0
+        ? [...paths].sort((a, b) => `${a.value}\0${a.type}`.localeCompare(`${b.value}\0${b.type}`))
+        : [undefined];
+    const mimes = [...mimeTypes].sort();
+    for (const scheme of [...schemes].sort()) {
+      for (const host of hostList) {
+        for (const path of pathList) {
+          this.exposeResource(fromId, scheme, host, path, mimes);
+        }
+      }
+    }
+  }
+
+  private exposeResource(
+    fromId: string,
+    scheme: string,
+    host?: string,
+    path?: { type: string; value: string },
+    mimeTypes: string[] = []
+  ): void {
+    const matchKey = resourceMatchKey(scheme, host, path?.value);
     const id = makeNodeId('android', 'Resource', matchKey);
     this.addNode({
       id,
       kind: 'Resource',
       matchKey,
-      name: host ? `${scheme}://${host}` : `${scheme}://`,
+      name: `${scheme}://${host ?? ''}${path?.value ?? ''}`,
       platform: 'android',
       subtype: 'deeplink',
       provenance: 'manifest',
       fidelity: 'source-project',
       confidence: 1,
-      attrs: { scheme, host },
+      attrs: {
+        scheme,
+        ...(host ? { host } : {}),
+        ...(path ? { path: path.value, pathType: path.type } : {}),
+        ...(mimeTypes.length > 0 ? { mimeTypes } : {}),
+      },
     });
     this.addEdge({
       id: makeEdgeId('exposes', fromId, id),

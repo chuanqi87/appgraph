@@ -166,8 +166,11 @@ export function dataModelMatchKey(simpleName: string): string {
   return `datamodel:${slug(simpleName)}`;
 }
 
-export function resourceMatchKey(scheme: string, host?: string): string {
-  return host ? `resource:${slug(scheme)}:${slug(host)}` : `resource:${slug(scheme)}`;
+export function resourceMatchKey(scheme: string, host?: string, path?: string): string {
+  const parts = ['resource', slug(scheme)];
+  if (host) parts.push(slug(host));
+  if (path) parts.push(slug(path));
+  return parts.join(':');
 }
 
 /**

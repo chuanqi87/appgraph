@@ -2,9 +2,9 @@
  * P1-3b · controlled LLM label write-back.
  *
  * The graph stays deterministic; semantic labels the calling agent writes back
- * live in a sidecar, gated by validateLabel (single line, length-bounded, target
- * must resolve). A rejected write returns guidance, never isError, and never
- * touches labels.json.
+ * live in a sidecar, gated by validateLabel — deliberately light (length-bounded,
+ * control-byte clean, target must resolve; multi-line summaries are allowed).
+ * A rejected write returns guidance, never isError, and never touches labels.json.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -23,11 +23,16 @@ describe('P1-3b · validateLabel quality gate', () => {
     const r = validateLabel({ name: '  Feed  ', summary: '  展示订阅信息流  ' });
     expect('entry' in r && r.entry).toMatchObject({ name: 'Feed', summary: '展示订阅信息流', provenance: 'llm' });
   });
-  it('rejects empty, over-long, and multi-line content', () => {
+  it('rejects empty, over-long, and control-byte content', () => {
     expect(validateLabel({ summary: '   ' })).toHaveProperty('error');
     expect(validateLabel({ summary: 'x'.repeat(LABEL_SUMMARY_MAX + 1) })).toHaveProperty('error');
-    expect(validateLabel({ summary: 'line1\nline2' })).toHaveProperty('error');
+    expect(validateLabel({ summary: 'has\x00null' })).toHaveProperty('error');
     expect(validateLabel({ name: 'a'.repeat(61), summary: 'ok' })).toHaveProperty('error');
+    expect(validateLabel({ name: 'line1\nline2', summary: 'ok' })).toHaveProperty('error');
+  });
+  it('accepts a multi-line summary (functional + migration notes)', () => {
+    const r = validateLabel({ summary: '订阅内容的信息流页面。\n迁移要点:依赖 WorkManager 后台刷新,鸿蒙侧建议用 WorkScheduler 替代。' });
+    expect('entry' in r && r.entry.summary.split('\n')).toHaveLength(2);
   });
 });
 
@@ -87,5 +92,19 @@ describe('P1-3b · migrate_label write-back', () => {
     h.execute('migrate_label', { target: 'feature', key: 'feedsig', name: '信息流', summary: '订阅内容页' });
     const out = h.execute('app_features', {});
     expect(out.content[0]!.text).toContain('〔AI:信息流 — 订阅内容页〕');
+  });
+
+  it('renders a multi-line summary as an indented block, not inline', () => {
+    const h = new MigrateToolHandler(root);
+    h.execute('migrate_label', {
+      target: 'feature',
+      key: 'feedsig',
+      name: '信息流',
+      summary: '订阅内容的信息流页面。\n迁移要点:后台刷新依赖 WorkManager。',
+    });
+    const text = h.execute('app_features', {}).content[0]!.text;
+    expect(text).toContain('〔AI:信息流〕');
+    expect(text).toContain('订阅内容的信息流页面。');
+    expect(text).toContain('迁移要点:后台刷新依赖 WorkManager。');
   });
 });

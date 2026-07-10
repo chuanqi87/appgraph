@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { NodeKind } from '../../types';
 import { VERIFIABLE_SPECS } from '../verify/capability-markers';
 import { AssemblyInput, ModuleBrief, assembleModuleBrief } from './context';
 
@@ -41,6 +42,14 @@ export interface ContractCheck {
   moduleName: string;
   /** Normalized subject key (see the per-kind rules in `checkId`). */
   subject: string;
+  /**
+   * Display-only real member kind for an `interface`-kind check (class /
+   * interface / enum / function). The check `kind` is fixed to `'interface'`
+   * because it is part of the stable id hash; this carries the true source kind
+   * so a brief can label a class member as「类」rather than「接口」. Never enters
+   * the id hash — purely a rendering hint. Absent on non-interface checks.
+   */
+  memberKind?: NodeKind;
   /** One-line human-readable expectation. */
   expect: string;
   verify: CheckVerify;
@@ -118,6 +127,7 @@ export function buildUnitContracts(
         moduleId,
         moduleName: brief.moduleName,
         subject: raw.subject,
+        ...(raw.memberKind ? { memberKind: raw.memberKind } : {}),
         expect: raw.expect,
         verify: raw.verify,
         ...(raw.params ? { params: raw.params } : {}),
@@ -169,6 +179,8 @@ interface RawCheck {
   kind: CheckKind;
   verify: CheckVerify;
   subject: string;
+  /** Display-only real member kind (interface checks only) — never in the id. */
+  memberKind?: NodeKind;
   expect: string;
   /** file anchor for split assignment (absent → module-level). */
   file?: string;
@@ -180,10 +192,13 @@ function moduleChecks(m: ModuleBrief): RawCheck[] {
   const out: RawCheck[] = [];
 
   // L1 · public interface (one check per member — split units anchor precisely).
+  // `kind` stays 'interface' (part of the stable id); `memberKind` carries the
+  // true source kind so the brief labels a class member 类, not 接口.
   for (const member of m.publicInterface) {
     out.push({
       tier: 'L1', kind: 'interface', verify: 'auto', depth: 'name-only',
       subject: member.qualifiedName,
+      memberKind: member.kind,
       expect: `公开成员 ${member.kind} ${member.name} 在目标侧有同名导出`,
       file: member.file,
       params: { name: member.name },
@@ -276,12 +291,20 @@ function moduleChecks(m: ModuleBrief): RawCheck[] {
     });
   }
   for (const q of c?.queries ?? []) {
+    // A clipped `@Query` (truncated at MAX_SQL_LEN) can't be a byte-exact
+    // invariant — a contains-scan over the残缺 SQL would false-fail. Down-grade
+    // it to a non-auto `info` check and flag manual review instead (T1-5c).
+    const truncated = q.truncated === true;
     out.push({
-      tier: 'L3', kind: 'query', verify: 'auto', depth: 'contains-scan',
+      tier: 'L3', kind: 'query',
+      verify: truncated ? 'info' : 'auto',
+      ...(truncated ? {} : { depth: 'contains-scan' as const }),
       subject: createHash('sha1').update(q.sql).digest('hex').slice(0, 12),
-      expect: `SQL 语句在目标侧保留(空白归一后比对)`,
+      expect: truncated
+        ? `SQL 语句已截断(超长),无法自动比对 —— 人工核对目标侧语义等价`
+        : `SQL 语句在目标侧保留(空白归一后比对)`,
       file: q.file,
-      params: { sql: q.sql },
+      params: { sql: q.sql, ...(truncated ? { truncated: true } : {}) },
     });
   }
   for (const e of c?.enums ?? []) {

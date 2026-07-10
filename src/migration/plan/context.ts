@@ -18,13 +18,23 @@
 
 import { AppNode } from '../../appgraph/schema';
 import { Node, NodeKind } from '../../types';
-import { HarmonyTarget, apiToCapability, harmonyTargetFor } from '../../appgraph/detect/api-capabilities';
+import {
+  HarmonyTarget,
+  apiToCapability,
+  concurrencyTargetFor,
+  harmonyTargetFor,
+} from '../../appgraph/detect/api-capabilities';
 import { ConstantsFacts } from '../../appgraph/detect/constants';
 import { DiFacts } from '../../appgraph/detect/di';
 import { FlowFacts } from '../../appgraph/detect/flows';
 import { FieldSchema } from '../../appgraph/detect/entities';
+import { SqliteSchemaHint } from '../../appgraph/detect/sqldelight';
+import { ControlNode } from '../../appgraph/detect/resources';
 import { TestContractFacts } from '../../appgraph/detect/tests';
-import { isTestPath } from '../../appgraph/detect/shared';
+import { isBuildFilePath, isTestPath } from '../../appgraph/detect/shared';
+
+/** How many of a module's `<string>` keys to sample in the resource inventory. */
+const MAX_RESOURCE_STRING_KEYS = 30;
 
 /** Public interface kinds — the cross-module surface (types + top-level fns). */
 const INTERFACE_KINDS = new Set<NodeKind>(['class', 'interface', 'enum', 'function']);
@@ -60,6 +70,22 @@ export interface ImpliedDependency {
   byKind: Record<string, number>;
 }
 
+/**
+ * A layout's compact control tree (T2), carried on the screen that renders it.
+ * For a hosting Activity/Fragment this is its hosted `xml-layout`'s tree; for a
+ * standalone `xml-layout` screen it is its own.
+ */
+export interface ControlTree {
+  /** Layout file stem this tree came from (`activity_main`). */
+  layout: string;
+  /** Total control-element count in the source layout (pre-truncation). */
+  controlCount: number;
+  /** The layout's root control element (bounded — see `ControlNode`). */
+  root: ControlNode;
+  /** True when the source tree was elided by the node/depth cap. */
+  truncated?: boolean;
+}
+
 /** A screen this module owns (U2/U6/S2), with its navigation fan-out. */
 export interface ScreenBrief {
   name: string;
@@ -71,6 +97,27 @@ export interface ScreenBrief {
   navigatesTo: string[];
   /** xml-layout screens this one hosts (S2 setContentView/inflate links). */
   layouts: string[];
+  /** Compact control tree(s) of this screen's layout(s) (T2), absent when none. */
+  controls?: ControlTree[];
+}
+
+/**
+ * A module's XML resource inventory (T2), aggregated from its `res/values/*`
+ * Resource nodes — the source-of-truth for the target's
+ * `resources/base/element/*.json`. A module-level fact (rendered on a split
+ * module's first slice only, like DI/flows).
+ */
+export interface ResourceBrief {
+  /** Per-resource-type entry counts across the module (string/color/dimen/style…). */
+  byType: Record<string, number>;
+  /** Total resource entries across the module's values files. */
+  total: number;
+  /** How many `res/values/*` files back this inventory. */
+  fileCount: number;
+  /** Sample `<string>` key names (sorted, capped at `MAX_RESOURCE_STRING_KEYS`). */
+  stringKeys: string[];
+  /** How many string keys were omitted past the cap. */
+  stringKeyOverflow: number;
 }
 
 /** A background component this module declares (S2, manifest ground truth). */
@@ -157,8 +204,16 @@ export interface ModuleBrief {
   roleCounts?: Record<string, number>;
   /** Screens this module owns (U2/U6/S2) — target pages + router config. */
   screens: ScreenBrief[];
+  /** XML resource inventory (U6/T2) — target element/*.json. Module-level fact. */
+  resources?: ResourceBrief;
   /** Data models this module owns (U3) — target RDB tables / interfaces. */
   dataModels: DataModelBrief[];
+  /**
+   * Handwritten-SQLite persistence hint (U3b) — table names + resolvable column
+   * keys where the schema is assembled from `KEY_*` constants and can't be
+   * statically evaluated into a typed model. Advisory (never a V2 entity check).
+   */
+  sqliteSchema?: SqliteSchemaHint;
   /** Custom View subclasses (P1-6) — inheritance→composition rewrite anchors. */
   customViews: CustomViewBrief[];
   /** Functional clusters within the module (P1-3) — file grouping by Feature. */
@@ -194,10 +249,14 @@ export interface AssemblyInput {
   liftedDeps: Map<string, ImpliedDependency[]>;
   /** module id → owned Screen nodes (U2/U6), via app_contains. */
   screensByModule: Map<string, AppNode[]>;
+  /** module id → owned values Resource nodes (U6), via app_contains. */
+  resourcesByModule: Map<string, AppNode[]>;
   /** module id → owned DataModel nodes (U3), via app_contains. */
   dataModelsByModule: Map<string, AppNode[]>;
   /** Screen node id → target screen names (U2 + S2 navigates_to edges). */
   navTargetsByScreenId: Map<string, string[]>;
+  /** Screen node id → compact control tree(s) of its layout(s) (T2). */
+  controlsByScreenId: Map<string, ControlTree[]>;
   /** module id → permission-backed capability ids (S1), via manifest uses_capability. */
   permissionCapsByModule: Map<string, string[]>;
   /** module id → owned BackgroundComponent nodes (S2), via app_contains. */
@@ -212,6 +271,12 @@ export interface AssemblyInput {
   customViewsByModule: Map<string, CustomViewBrief[]>;
   /** module id → functional clusters (P1-3), Feature ∩ module files. */
   featureSectionsByModule: Map<string, FeatureSectionBrief[]>;
+  /**
+   * Code node ids of `@Preview`/`@DevicePreviews` composables (T1-3): tooling-only
+   * preview functions that are not real public surface. Excluded from every
+   * public-interface extraction (module brief, dep surface, T3 baseline).
+   */
+  previewComposableIds: ReadonlySet<string>;
 }
 
 /**
@@ -244,7 +309,7 @@ export function assembleModuleBrief(
     symbolCount:
       typeof module?.attrs?.symbolCount === 'number' ? module.attrs.symbolCount : undefined,
     files: [...new Set(nodes.map((n) => n.filePath))].sort(),
-    publicInterface: extractPublicInterface(nodes),
+    publicInterface: extractPublicInterface(nodes, input.previewComposableIds),
     capabilities: extractCapabilities(nodes),
     dependencies: extractDependencies(moduleId, input),
     testDependencies: [...(input.moduleTestDeps.get(moduleId) ?? [])]
@@ -256,10 +321,16 @@ export function assembleModuleBrief(
       .filter((n) => inFilter(n.platformRef?.file))
       .map((n) => toScreenBrief(n, input))
       .sort((a, b) => a.name.localeCompare(b.name)),
+    // Resources are a whole-module fact (like DI/flows) — assembled un-filtered;
+    // a split sibling suppresses the RENDER, not the assembly (T2 / T1-2).
+    resources: toResourceBrief(input.resourcesByModule.get(moduleId) ?? []),
     dataModels: (input.dataModelsByModule.get(moduleId) ?? [])
       .filter((n) => inFilter(n.platformRef?.file))
       .map(toDataModelBrief)
       .sort((a, b) => a.name.localeCompare(b.name)),
+    // Handwritten-SQLite hint is a whole-module fact (like DI/flows) — assembled
+    // un-filtered; a split sibling suppresses the RENDER, not the assembly.
+    sqliteSchema: asSqliteHint(module?.attrs?.sqlite),
     customViews: (input.customViewsByModule.get(moduleId) ?? [])
       .filter((v) => inFilter(v.file))
       .sort((a, b) => a.name.localeCompare(b.name)),
@@ -281,12 +352,49 @@ export function assembleModuleBrief(
 
 /** A persisted Screen node → the brief entry, with its navigation fan-out. */
 function toScreenBrief(node: AppNode, input: AssemblyInput): ScreenBrief {
+  const controls = input.controlsByScreenId.get(node.id);
   return {
     name: node.name,
     file: node.platformRef?.file,
     subtype: node.subtype,
     navigatesTo: input.navTargetsByScreenId.get(node.id) ?? [],
     layouts: input.layoutsByScreenId.get(node.id) ?? [],
+    ...(controls && controls.length > 0 ? { controls } : {}),
+  };
+}
+
+/**
+ * Aggregate a module's `res/values/*` Resource nodes into one inventory (T2):
+ * per-type counts, total entries, and a bounded sample of `<string>` keys. The
+ * agent uses this to build the target `resources/base/element/*.json`. Returns
+ * undefined when the module owns no such resources (keeps the field additive).
+ */
+function toResourceBrief(nodes: AppNode[]): ResourceBrief | undefined {
+  if (nodes.length === 0) return undefined;
+  const byType: Record<string, number> = {};
+  const stringKeys = new Set<string>();
+  let total = 0;
+  for (const n of nodes) {
+    const attrs = n.attrs ?? {};
+    const bt = attrs.byType;
+    if (bt && typeof bt === 'object' && !Array.isArray(bt)) {
+      for (const [k, v] of Object.entries(bt as Record<string, unknown>)) {
+        if (typeof v === 'number') byType[k] = (byType[k] ?? 0) + v;
+      }
+    }
+    if (typeof attrs.entryCount === 'number') total += attrs.entryCount;
+    if (Array.isArray(attrs.stringNames)) {
+      for (const s of attrs.stringNames) if (typeof s === 'string') stringKeys.add(s);
+    }
+  }
+  if (total === 0 && Object.keys(byType).length === 0) return undefined;
+  const allKeys = [...stringKeys].sort();
+  return {
+    byType,
+    total,
+    fileCount: nodes.length,
+    stringKeys: allKeys.slice(0, MAX_RESOURCE_STRING_KEYS),
+    stringKeyOverflow: Math.max(0, allKeys.length - MAX_RESOURCE_STRING_KEYS),
   };
 }
 
@@ -332,18 +440,49 @@ function asConstantsFacts(v: unknown): ConstantsFacts | undefined {
 function asTestContractFacts(v: unknown): TestContractFacts | undefined {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as TestContractFacts) : undefined;
 }
+function asSqliteHint(v: unknown): SqliteSchemaHint | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const hint = v as SqliteSchemaHint;
+  return Array.isArray(hint.tables) && Array.isArray(hint.columns) ? hint : undefined;
+}
 
-/** Public types + top-level functions, non-test, non-private/internal. */
-export function extractPublicInterface(nodes: Node[]): InterfaceMember[] {
+/**
+ * Public types + top-level functions, non-test, non-private/internal.
+ *
+ * `excludeIds` drops nodes an external pass flagged as non-surface (T1-3 preview
+ * composables) — keyed by node id so every call site (module brief, dep surface,
+ * T3 baseline) filters identically.
+ */
+export function extractPublicInterface(
+  nodes: Node[],
+  excludeIds?: ReadonlySet<string>
+): InterfaceMember[] {
+  // Ancestor-scope index: a member whose enclosing scope is a function/method is
+  // a local declaration or an anonymous-inner-class override, NOT public surface
+  // (T1-3). The qualifiedName encodes the full enclosing chain, so look each
+  // proper prefix up here by kind.
+  const kindByQualifiedName = new Map<string, NodeKind>();
+  for (const n of nodes) kindByQualifiedName.set(n.qualifiedName, n.kind);
+
   const members: InterfaceMember[] = [];
   for (const n of nodes) {
     if (!INTERFACE_KINDS.has(n.kind)) continue;
     if (isTestPath(n.filePath)) continue;
+    // Symbols declared in a build script (build.gradle.kts, buildSrc/…) are
+    // build tooling, not app surface — they never belong on the T3 baseline
+    // (CatchUp's CutChangelogTask / UpdateVersion came from build.gradle.kts) (T1-8).
+    if (isBuildFilePath(n.filePath)) continue;
     if (n.visibility === 'private' || n.visibility === 'internal') continue;
     // Anonymous classes (`<Listener$anon@42>`, `<anonymous>`) are extraction
     // artifacts, not exportable surface — and their names embed line numbers,
     // so letting them in makes the T3 baseline both unfulfillable and unstable.
     if (n.name.startsWith('<')) continue;
+    // @Preview/@DevicePreviews composables — tooling-only, not real surface (T1-3).
+    if (excludeIds?.has(n.id)) continue;
+    // A member scoped under a function/method (a local fn, or a named override
+    // on an anonymous inner class) is not a public export (T1-3); a genuine
+    // nested *type* — enclosed only by class/interface/object/enum — is kept.
+    if (enclosedByCallable(n.qualifiedName, kindByQualifiedName)) continue;
     members.push({
       kind: n.kind,
       name: n.name,
@@ -357,6 +496,32 @@ export function extractPublicInterface(nodes: Node[]): InterfaceMember[] {
   return members.sort(
     (a, b) => typeRank(a.kind) - typeRank(b.kind) || a.qualifiedName.localeCompare(b.qualifiedName)
   );
+}
+
+/**
+ * True when some enclosing scope of `qualifiedName` is a function/method (the
+ * member is a local / anonymous-inner-class override) or an anonymous scope.
+ * The qualifiedName is `package::Outer::Inner…`: segment 0 is the package, the
+ * rest is the type-nesting chain, so proper prefixes past the package name the
+ * enclosing scopes. A genuine nested type (all ancestors class/interface/object/
+ * enum) returns false and stays on the public surface.
+ */
+function enclosedByCallable(
+  qualifiedName: string,
+  kindByQualifiedName: Map<string, NodeKind>
+): boolean {
+  const segs = qualifiedName.split('::');
+  if (segs.length <= 2) return false; // `package::Name` / bare `Name` — top-level.
+  // Proper prefixes, deepest first, down to (but excluding) the bare package.
+  for (let i = segs.length - 1; i >= 2; i--) {
+    const kind = kindByQualifiedName.get(segs.slice(0, i).join('::'));
+    if (kind === 'function' || kind === 'method') return true;
+  }
+  // An anonymous scope anywhere in the ancestry (`Outer::<anon>::member`).
+  for (let i = 1; i < segs.length - 1; i++) {
+    if (segs[i]!.startsWith('<')) return true;
+  }
+  return false;
 }
 
 /** Capabilities the module uses, from its import FQNs. */
@@ -373,11 +538,13 @@ function extractCapabilities(nodes: Node[]): CapabilityUse[] {
     }
     if (ev.size < 8) ev.add(n.name);
   }
-  return [...byId.keys()].sort().map((id) => ({
-    id,
-    harmony: harmonyTargetFor(id),
-    evidence: [...byId.get(id)!].sort(),
-  }));
+  return [...byId.keys()].sort().map((id) => {
+    const evidence = [...byId.get(id)!].sort();
+    // concurrency.async's target depends on the module's ACTUAL async framework
+    // (Kotlin coroutines vs RxJava, or both) — pick it from this module's evidence.
+    const harmony = id === 'concurrency.async' ? concurrencyTargetFor(evidence) : harmonyTargetFor(id);
+    return { id, harmony, evidence };
+  });
 }
 
 /** Declared dependency modules, each with its source-side public surface. */
@@ -392,7 +559,7 @@ function extractDependencies(moduleId: string, input: AssemblyInput): Dependency
       .filter((n): n is Node => n !== undefined);
     briefs.push({
       moduleName: depModule?.name ?? depId,
-      publicMembers: extractPublicInterface(depNodes)
+      publicMembers: extractPublicInterface(depNodes, input.previewComposableIds)
         .slice(0, 30)
         .map((m) => `${m.kind} ${m.name}`),
     });

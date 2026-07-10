@@ -22,6 +22,7 @@ import {
 } from '../schema';
 import { Node } from '../../types';
 import { annotationArg, KotlinField, leadingAnnotations, parsePrimaryConstructor, superTypes } from './kotlin-source';
+import { javaFields, javaSuperTypes } from './java-source';
 import { DetectContext, isShippableJvmNode, ReadCode } from './shared';
 
 /** One field of a data model, normalized for cross-platform schema diffing. */
@@ -61,49 +62,38 @@ export function detectEntities(nodes: Node[], readCode: ReadCode, ctx: DetectCon
   for (const node of classes) {
     const code = readCode(node);
     if (code === null) continue;
-    const anno = leadingAnnotations(code);
-    const isEntity = anno.includes('Entity');
-    const isSerializable = anno.includes('Serializable');
-    if (!isEntity && !isSerializable) continue;
-    // A `@Serializable` object/class that is only a navigation route key is not a
-    // data model — it is product navigation (owned by U2), so exclude it here.
-    if (!isEntity && superTypes(code).some((s) => NAV_KEY_RE.test(s))) continue;
-
-    const rawFields = parsePrimaryConstructor(code);
-    if (rawFields.length === 0) {
+    const model = classifyModel(node, code);
+    if (model === null) continue;
+    if (model === 'warn') {
       warnings.push({
         message: `U3 · ${node.name} 标注为数据模型但未解析出字段(可能不是 data class 或字段在类体内)`,
         ref: { file: node.filePath, symbol: node.name },
       });
       continue;
     }
-    const fields = rawFields.map((f) => toFieldSchema(f, code));
-    fieldCount += fields.length;
-
-    const subtype = isEntity ? 'entity' : 'serializable';
-    if (isEntity) entityCount++;
+    fieldCount += model.fields.length;
+    if (model.subtype === 'entity') entityCount++;
     else serializableCount++;
 
     const matchKey = dataModelMatchKey(node.name);
     if (byMatchKey.has(matchKey)) continue; // stable: first id-sorted wins
     const id = makeNodeId('android', 'DataModel', matchKey);
-    const tableName = isEntity ? annotationArg(code, 'Entity', 'tableName') : null;
     byMatchKey.set(matchKey, {
       id,
       kind: 'DataModel',
       matchKey,
       name: node.name,
       platform: 'android',
-      subtype,
+      subtype: model.subtype,
       provenance: 'source-static',
       fidelity: 'source-project',
       confidence: 0.9,
       platformRef: { file: node.filePath, symbol: node.name },
       attrs: {
-        framework: isEntity ? 'room' : 'kotlinx-serialization',
-        ...(tableName ? { tableName } : {}),
-        fieldCount: fields.length,
-        fields,
+        framework: model.framework,
+        ...(model.tableName ? { tableName: model.tableName } : {}),
+        fieldCount: model.fields.length,
+        fields: model.fields,
       },
     });
 
@@ -129,6 +119,83 @@ export function detectEntities(nodes: Node[], readCode: ReadCode, ctx: DetectCon
     containsEdges: [...containsById.values()].sort((a, b) => a.id.localeCompare(b.id)),
     warnings,
     stats: { entityCount, serializableCount, fieldCount },
+  };
+}
+
+/** A class classified as a data model + the facts needed to emit its node. */
+interface ModelClass {
+  subtype: 'entity' | 'serializable';
+  framework: string;
+  fields: FieldSchema[];
+  tableName: string | null;
+}
+
+/**
+ * Behavior/infra class-name suffixes that are NEVER data models — a Java class
+ * that merely `implements Serializable` is only a data model if it is a data
+ * carrier, not a `…Manager`/`…Service`/`…Adapter`. This bound keeps the
+ * un-annotated Java POJO family from manufacturing false V2 entity gaps.
+ */
+const BEHAVIOR_NAME_RE =
+  /(Manager|Service|Adapter|Helper|Activity|Fragment|Handler|Controller|Factory|Builder|Provider|Presenter|ViewModel|Repository|UseCase|Interactor|Util|Utils|Test|Dao|Database|Client|Api|Mapper|Serializer|Deserializer|Parser|Loader|Worker|Receiver|Binder|Callback|Listener|Observer|Task|Runnable|Exception|Error|Config|Module|Component|Fixture)$/;
+
+/**
+ * Classify a class as a data model. Returns the model facts to emit, `'warn'`
+ * when a Kotlin class is annotated as a model but no fields could be recovered
+ * (the existing coverage warning), or `null` when it is not a data model.
+ *
+ * Sources covered:
+ *   - Room `@Entity` (Kotlin/Java), kotlinx `@Serializable`, Moshi `@JsonClass`,
+ *     `@Parcelize` — annotation-gated, low false-positive risk.
+ *   - Un-annotated Java POJOs that `implements Serializable`/`Parcelable` — a
+ *     data-carrier signal, gated by `BEHAVIOR_NAME_RE` + a non-empty field set.
+ */
+function classifyModel(node: Node, code: string): ModelClass | 'warn' | null {
+  return node.language === 'java' ? classifyJavaModel(node, code) : classifyKotlinModel(code);
+}
+
+function classifyKotlinModel(code: string): ModelClass | 'warn' | null {
+  const anno = leadingAnnotations(code);
+  const isEntity = anno.includes('Entity');
+  const moshi = anno.includes('JsonClass');
+  const parcelize = anno.includes('Parcelize');
+  const kotlinxSer = anno.includes('Serializable');
+  if (!isEntity && !moshi && !parcelize && !kotlinxSer) return null;
+  // A `@Serializable`/`@Parcelize` object that is only a navigation route key is
+  // product navigation (owned by U2), not a data model — exclude it here.
+  if (!isEntity && superTypes(code).some((s) => NAV_KEY_RE.test(s))) return null;
+
+  const raw = parsePrimaryConstructor(code);
+  if (raw.length === 0) return 'warn';
+  const framework = isEntity ? 'room' : moshi ? 'moshi' : parcelize ? 'parcelize' : 'kotlinx-serialization';
+  return {
+    subtype: isEntity ? 'entity' : 'serializable',
+    framework,
+    fields: raw.map((f) => toFieldSchema(f, code)),
+    tableName: isEntity ? annotationArg(code, 'Entity', 'tableName') : null,
+  };
+}
+
+function classifyJavaModel(node: Node, code: string): ModelClass | null {
+  if (BEHAVIOR_NAME_RE.test(node.name)) return null;
+  const anno = leadingAnnotations(code);
+  const isEntity = anno.includes('Entity');
+  const moshi = anno.includes('JsonClass');
+  const serAnno = anno.includes('Serializable'); // kotlinx @Serializable on Java (rare)
+  const supers = javaSuperTypes(code);
+  const implementsData = supers.includes('Serializable') || supers.includes('Parcelable');
+  if (!isEntity && !moshi && !serAnno && !implementsData) return null;
+
+  // A fieldless Java class is not a usable data model — skip silently (no warn):
+  // emitting it would create a target-side entity requirement with no schema.
+  const raw = javaFields(code);
+  if (raw.length === 0) return null;
+  const framework = isEntity ? 'room' : moshi ? 'moshi' : 'java-pojo';
+  return {
+    subtype: isEntity ? 'entity' : 'serializable',
+    framework,
+    fields: raw.map((f) => toFieldSchema(f, code)),
+    tableName: isEntity ? annotationArg(code, 'Entity', 'tableName') : null,
   };
 }
 

@@ -16,7 +16,12 @@ import { aggregateModuleDependencies } from '../../src/appgraph/modules/aggregat
 import { computeMigrationOrder } from '../../src/migration/order/topo';
 import { projectFileCoupling } from '../../src/appgraph/community/project';
 import { detectCommunities } from '../../src/appgraph/community/detect';
-import { apiToCapability, harmonyTargetFor } from '../../src/appgraph/detect/api-capabilities';
+import {
+  apiToCapability,
+  concurrencyTargetFor,
+  harmonyTargetFor,
+} from '../../src/appgraph/detect/api-capabilities';
+import { androidPermissionToCapability } from '../../src/appgraph/extractors/android/capabilities';
 import { serializeMigrationGraph, hashMigrationGraph } from '../../src/migration/serialize';
 import { emptyMigrationGraph, mergeInto } from '../../src/migration/types';
 import { extractModuleSkeleton } from '../../src/appgraph/modules/gradle-ext';
@@ -161,6 +166,42 @@ describe('API → capability + HarmonyOS target', () => {
     expect(apiToCapability('androidx.work.WorkManager')).toBe('background.task');
     expect(apiToCapability('kotlin.collections.List')).toBeNull();
     expect(harmonyTargetFor('persistence.database')?.module).toContain('relationalStore');
+  });
+
+  it('maps the P3.4 review-named permissions to capabilities (call/state/call-log/tile/query)', () => {
+    expect(androidPermissionToCapability('android.permission.ANSWER_PHONE_CALLS')).toBe('phone.call');
+    expect(androidPermissionToCapability('android.permission.BIND_INCALL_SERVICE')).toBe('phone.call');
+    expect(androidPermissionToCapability('android.permission.MANAGE_OWN_CALLS')).toBe('phone.call');
+    expect(androidPermissionToCapability('android.permission.MODIFY_PHONE_STATE')).toBe('phone.state');
+    expect(androidPermissionToCapability('android.permission.READ_CALL_LOG')).toBe('call-log');
+    expect(androidPermissionToCapability('android.permission.WRITE_CALL_LOG')).toBe('call-log');
+    expect(androidPermissionToCapability('android.permission.CAPTURE_AUDIO_OUTPUT')).toBe('audio.playback');
+    expect(androidPermissionToCapability('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK')).toBe(
+      'background.foreground-service'
+    );
+    expect(androidPermissionToCapability('android.permission.BIND_QUICK_SETTINGS_TILE')).toBe('quick-settings.tile');
+    expect(androidPermissionToCapability('android.permission.QUERY_ALL_PACKAGES')).toBe('package.query');
+    // Every mapped capability has a HarmonyOS target (or an explicit 待裁决 note).
+    expect(harmonyTargetFor('call-log')?.note).toContain('待裁决');
+    expect(harmonyTargetFor('quick-settings.tile')?.note).toContain('待裁决');
+    expect(harmonyTargetFor('package.query')?.module).toContain('bundleManager');
+    // A still-unmapped permission returns null (S1 surfaces it as a coverage warning).
+    expect(androidPermissionToCapability('android.permission.ACCESS_ADSERVICES_AD_ID')).toBeNull();
+  });
+
+  it('picks the concurrency target from the actual async framework evidence', () => {
+    const rx = concurrencyTargetFor(['io.reactivex.rxjava3.core.Observable']);
+    expect(rx.note).toContain('RxJava');
+    expect(rx.note).toContain('背压');
+    const co = concurrencyTargetFor(['kotlinx.coroutines.flow.Flow']);
+    expect(co.note).toContain('Coroutine');
+    expect(co.note).not.toContain('RxJava');
+    const both = concurrencyTargetFor([
+      'kotlinx.coroutines.flow.Flow',
+      'io.reactivex.rxjava3.core.Single',
+    ]);
+    expect(both.note).toContain('协程');
+    expect(both.note).toContain('RxJava');
   });
 });
 

@@ -12,7 +12,15 @@ import { CodeSymbolGraph } from '../graph-reader';
 import { isTestPath } from '../detect/shared';
 import { extractModuleSkeleton } from './gradle-ext';
 import { ModuleAssignment, assignNodesToModules } from './assign';
-import { aggregateModuleDependencies, liftedConfidence } from './aggregate';
+import { LiftedDependency, aggregateModuleDependencies, liftedConfidence } from './aggregate';
+
+/**
+ * Minimum crossing-edge weight for a lifted coupling to count as STRONG enough
+ * to suspect a convention-injected build dependency (matches the top
+ * `liftedConfidence` tier). Below this the coupling is too weak to trust as a
+ * missing declared dependency.
+ */
+const CONVENTION_COUPLING_MIN_WEIGHT = 10;
 
 export interface ModuleGraphResult {
   packageName: string | null;
@@ -119,6 +127,15 @@ export function buildModuleDependencyGraph(
     (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to)
   );
 
+  // Convention-injected dependency sanity-check (P3.4): a build-logic convention
+  // plugin can inject a `project(":core")` dependency (e.g. shadowsocks'
+  // `setupApp()`) the regex parser can't see, so mobile/tv end up with a STRONG
+  // implicit coupling to core but no declared edge — leaving them unordered in
+  // the declared graph and liable to a wave inversion. We do NOT synthesize a
+  // declared edge (implicit edges carry false positives); we surface a warning.
+  const nameById = new Map(nodes.map((n) => [n.id, n.name]));
+  const conventionWarnings = conventionDependencyWarnings(skeleton.edges, lifted, nameById);
+
   let assignedNodes = 0;
   for (const ids of assignment.moduleToNodeIds.values()) assignedNodes += ids.size;
 
@@ -126,7 +143,7 @@ export function buildModuleDependencyGraph(
     packageName: skeleton.packageName,
     nodes,
     edges,
-    warnings: skeleton.warnings,
+    warnings: [...skeleton.warnings, ...conventionWarnings],
     moduleDirToId: skeleton.moduleDirToId,
     assignment,
     stats: {
@@ -138,4 +155,63 @@ export function buildModuleDependencyGraph(
       unassignedNodes: assignment.unassigned,
     },
   };
+}
+
+/**
+ * Flag strong implicit couplings that no declared dependency orders (in either
+ * direction) — the fingerprint of a convention-plugin-injected `project(...)`
+ * dependency the build-file regex can't see. Only STRONG couplings
+ * (≥ `CONVENTION_COUPLING_MIN_WEIGHT`) where the declared graph constrains
+ * neither `A→B` nor `B→A` qualify: a declared path either way already fixes the
+ * order (so no inversion) or means the reverse coupling is resolver noise. One
+ * warning per unordered module pair, sorted for determinism.
+ */
+function conventionDependencyWarnings(
+  declaredEdges: AppEdge[],
+  lifted: LiftedDependency[],
+  nameById: Map<string, string>
+): CoverageWarning[] {
+  // Declared adjacency over MAIN-scoped edges only (test-scoped deps don't order units).
+  const adj = new Map<string, Set<string>>();
+  for (const e of declaredEdges) {
+    if (e.attrs?.scope === 'test') continue;
+    let set = adj.get(e.from);
+    if (!set) {
+      set = new Set<string>();
+      adj.set(e.from, set);
+    }
+    set.add(e.to);
+  }
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>([from]);
+    const stack = [...(adj.get(from) ?? [])];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      if (cur === to) return true;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const next of adj.get(cur) ?? []) stack.push(next);
+    }
+    return false;
+  };
+
+  const warnings: CoverageWarning[] = [];
+  const seenPairs = new Set<string>();
+  for (const dep of lifted) {
+    const { fromModuleId: a, toModuleId: b, weight } = dep;
+    if (a === b || weight < CONVENTION_COUPLING_MIN_WEIGHT) continue;
+    if (reaches(a, b) || reaches(b, a)) continue; // already ordered → no inversion
+    const pairKey = a < b ? `${a}\0${b}` : `${b}\0${a}`;
+    if (seenPairs.has(pairKey)) continue;
+    seenPairs.add(pairKey);
+    const nameA = nameById.get(a) ?? a;
+    const nameB = nameById.get(b) ?? b;
+    warnings.push({
+      message:
+        `模块 ${nameA} 对 ${nameB} 有强隐式耦合(${weight} 条跨模块引用)却未在 build 文件声明依赖,` +
+        `且拓扑上二者无声明约束——疑似 convention 插件注入的依赖(如 setupApp()→project(...)),波次可能倒挂,` +
+        `请人工确认迁移顺序`,
+    });
+  }
+  return warnings.sort((x, y) => x.message.localeCompare(y.message));
 }

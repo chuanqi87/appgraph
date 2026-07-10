@@ -269,6 +269,45 @@ describe('P · unit planning — splitting', () => {
     expect(r.units.map((u) => u.order)).toEqual([0, 1, 2]);
   });
 
+  it('re-splits an oversized rest remainder by source directory (glue after features)', () => {
+    const big = archModule('big', 12000);
+    const f1 = feature('Feat', 'ffff', big.id, ['big/src/main/kotlin/app/feat/Screen.kt']);
+    const graph = fixture([big, f1], []);
+    const files = new Map([
+      [
+        big.id,
+        [
+          'big/src/main/kotlin/app/feat/Screen.kt', // covered by f1
+          'big/src/main/kotlin/app/data/Repo.kt',
+          'big/src/main/kotlin/app/data/Dao.kt',
+          'big/src/main/kotlin/app/ui/View.kt',
+        ],
+      ],
+    ]);
+    const counts = new Map([
+      ['big/src/main/kotlin/app/feat/Screen.kt', 4000],
+      ['big/src/main/kotlin/app/data/Repo.kt', 2000],
+      ['big/src/main/kotlin/app/data/Dao.kt', 500],
+      ['big/src/main/kotlin/app/ui/View.kt', 2000],
+    ]);
+    const r = planUnits(graph.order!, graph, OPTS, files, counts);
+
+    const restUnits = r.units.filter((u) => u.featureSig !== 'ffff');
+    // rest = 4500 symbols across two package dirs → two directory slices, sorted.
+    expect(restUnits.map((u) => u.label)).toEqual([':big#rest/app.data', ':big#rest/app.ui']);
+    expect(restUnits.map((u) => u.featureSig)).toEqual([
+      'rest:big/src/main/kotlin/app/data',
+      'rest:big/src/main/kotlin/app/ui',
+    ]);
+    // Determinism: identical re-run.
+    const r2 = planUnits(graph.order!, graph, OPTS, files, counts);
+    expect(JSON.stringify(r)).toBe(JSON.stringify(r2));
+    // rest slices are independent of each other; each depends on the feature slice.
+    const featUnit = r.units.find((u) => u.featureSig === 'ffff')!;
+    for (const u of restUnits) expect(u.dependsOnUnitIds).toEqual([featUnit.id]);
+    expect(restUnits[0]!.wave).toBe(restUnits[1]!.wave); // parallel
+  });
+
   it('never splits a cyclic SCC unit or a module without subdivision Features', () => {
     const a = archModule('cyca', 4000);
     const b = archModule('cycb', 4000);
@@ -283,6 +322,61 @@ describe('P · unit planning — splitting', () => {
     const r2 = plan(g2);
     expect(r2.units).toHaveLength(1);
     expect(r2.units[0]!.kind).toBe('module');
+  });
+});
+
+describe('P · unit planning — necessity-aware binning (T1-10)', () => {
+  function devModule(name: string, symbolCount: number): AppNode {
+    const m = archModule(name, symbolCount);
+    return { ...m, attrs: { ...m.attrs, necessity: 'dev-only' } };
+  }
+
+  it('never bin-packs a product unit and a dev-only unit into the same bin', () => {
+    // Two product roots consume every leaf → each leaf's root-excluded dependent
+    // set is empty (bin-pack, don't fold). Product leaves and dev-only leaves
+    // share that empty key but must NOT land in one bin.
+    const r1 = archModule('r1', 200);
+    const r2 = archModule('r2', 200);
+    const p1 = archModule('design', 50); // product
+    const p2 = archModule('ui', 40); // product
+    const d1 = devModule('lint', 50); // dev-only
+    const d2 = devModule('benchmark', 40); // dev-only
+    const graph = fixture(
+      [r1, r2, p1, p2, d1, d2],
+      [
+        dependsOn(r1, p1), dependsOn(r1, p2), dependsOn(r1, d1), dependsOn(r1, d2),
+        dependsOn(r2, p1), dependsOn(r2, p2), dependsOn(r2, d1), dependsOn(r2, d2),
+      ]
+    );
+    const r = plan(graph);
+
+    // No unit mixes a product leaf with a dev-only leaf.
+    const mixed = r.units.find(
+      (u) =>
+        (u.moduleIds.includes(p1.id) || u.moduleIds.includes(p2.id)) &&
+        (u.moduleIds.includes(d1.id) || u.moduleIds.includes(d2.id))
+    );
+    expect(mixed).toBeUndefined();
+
+    // The dev-only leaves pack together, flagged dev-only.
+    const devPack = r.units.find((u) => u.moduleIds.includes(d1.id))!;
+    expect(devPack.moduleIds.sort()).toEqual([d1.id, d2.id].sort());
+    expect(devPack.necessity).toBe('dev-only');
+
+    // The product leaves pack together, NOT flagged dev-only.
+    const prodPack = r.units.find((u) => u.moduleIds.includes(p1.id))!;
+    expect(prodPack.moduleIds.sort()).toEqual([p1.id, p2.id].sort());
+    expect(prodPack.necessity).toBeUndefined();
+  });
+
+  it('is deterministic with dev-only modules present', () => {
+    const app = archModule('app', 500);
+    const p = archModule('design', 40);
+    const d = devModule('lint', 40);
+    const graph = fixture([app, p, d], [dependsOn(app, p), dependsOn(app, d)]);
+    const a = plan(graph);
+    const b = plan(graph);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 

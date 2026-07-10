@@ -140,6 +140,28 @@ describe('S2 · android structure detect', () => {
     }
   });
 
+  it('refines a background component target by its framework base class, else falls back (P3.4)', () => {
+    const { root, modules, layoutIds } = mkProject();
+    try {
+      // SyncService extends VpnService; DataProvider's class can't be resolved.
+      const resolveSuperTypes = (name: string): string[] | undefined =>
+        name === 'SyncService' ? ['VpnService'] : name === 'BootReceiver' ? ['InCallService'] : undefined;
+      const r = detectAndroidStructure(root, modules, layoutIds, resolveSuperTypes);
+
+      // VpnService base → VpnExtensionAbility (not the generic ServiceExtensionAbility).
+      const service = r.nodes.find((n) => n.name === 'SyncService')!;
+      expect(String(service.attrs?.harmonyModule)).toContain('VpnExtensionAbility');
+      // InCallService base → 平台可行性待裁决.
+      const receiver = r.nodes.find((n) => n.name === 'BootReceiver')!;
+      expect(String(receiver.attrs?.harmonyNote)).toContain('待裁决');
+      // Unresolved superclass → manifest-subtype fallback (no regression).
+      const provider = r.nodes.find((n) => n.name === 'DataProvider')!;
+      expect(String(provider.attrs?.harmonyModule)).toContain('DataShareExtensionAbility');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('no longer scans navigation from source — nav/backed_by are lifted from the core graph', () => {
     const { root, modules, layoutIds } = mkProject();
     try {
@@ -156,6 +178,78 @@ describe('S2 · android structure detect', () => {
       expect(r.edges.some((e) => e.kind === 'backed_by')).toBe(false);
       expect(r.stats.intentNavEdges).toBe(0);
       expect(r.stats.backedByEdges).toBe(0);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('enriches deep links with host + path + mimeType, merging split <data> elements', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-deeplink-'));
+    try {
+      // Combined <data> (scheme+host+pathPrefix), a second path on the same host,
+      // and a SPLIT filter whose scheme/mimeType live on separate <data> elements.
+      write(
+        root,
+        'app/src/main/AndroidManifest.xml',
+        `<manifest package="com.example.app">
+  <application>
+    <activity android:name=".MainActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/deeplink/main"/>
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https" android:host="app.example.com" android:pathPrefix="/deeplink/search"/>
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="content"/>
+        <data android:scheme="file"/>
+        <data android:mimeType="application/rss+xml"/>
+        <data android:mimeType="text/xml"/>
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+`
+      );
+      const modules: ModuleRef[] = [{ id: 'm-app', name: ':app', dir: 'app' }];
+      const r = detectAndroidStructure(root, modules, new Set());
+
+      const deeplinks = r.nodes.filter((n) => n.kind === 'Resource' && n.subtype === 'deeplink');
+      const byName = new Map(deeplinks.map((n) => [n.name, n]));
+
+      // Two distinct paths on the same host → two distinct nodes (not one collision).
+      const main = byName.get('https://app.example.com/deeplink/main');
+      const search = byName.get('https://app.example.com/deeplink/search');
+      expect(main).toBeTruthy();
+      expect(search).toBeTruthy();
+      expect(main!.attrs).toMatchObject({
+        scheme: 'https',
+        host: 'app.example.com',
+        path: '/deeplink/main',
+        pathType: 'pathPrefix',
+      });
+
+      // Split filter: scheme-only <data> merges with the mimeType <data> elements.
+      const content = byName.get('content://');
+      expect(content).toBeTruthy();
+      expect(content!.attrs?.mimeTypes).toEqual(['application/rss+xml', 'text/xml']);
+      expect(byName.has('file://')).toBe(true);
+
+      // Every deep link is still exposed by MainActivity, deterministically.
+      const mainScreen = r.nodes.find((n) => n.kind === 'Screen' && n.name === 'MainActivity')!;
+      expect(
+        deeplinks.every((d) =>
+          r.edges.some((e) => e.kind === 'exposes' && e.from === mainScreen.id && e.to === d.id)
+        )
+      ).toBe(true);
+      const twice = detectAndroidStructure(root, modules, new Set());
+      expect(JSON.stringify(twice.nodes)).toBe(JSON.stringify(r.nodes));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

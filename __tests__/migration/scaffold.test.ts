@@ -110,3 +110,49 @@ describe('scaffold file ordering', () => {
     expect('00-app-scaffold' < '01-feature').toBe(true);
   });
 });
+
+describe('T1-1 · total-table dedup across a module\'s split slices', () => {
+  // A module split into N slices carries its module-level facts (background
+  // components / data models) on EVERY slice's brief. The scaffold aggregate
+  // must count each once (koler's CallService×9 → ×1).
+  function splitSiblings(): MigrationPlan {
+    const shared = {
+      backgroundComponents: [{ name: 'CallService', subtype: 'service' }],
+      dataModels: [{ name: 'CallLog', subtype: 'entity', fields: [] }],
+    };
+    const mkUnit = (order: number, id: string) => ({
+      id, order, label: `:phone#f${order}`, kind: 'split' as const, cyclic: false,
+      moduleIds: ['m'], briefFile: `units/0${order + 1}.md`, contractFile: `contracts/0${order + 1}.json`,
+      symbolCount: 10, modules: [moduleBrief({ moduleName: ':phone', ...shared })],
+    });
+    return {
+      ...planWith([]),
+      units: [mkUnit(0, 'a'), mkUnit(1, 'b'), mkUnit(2, 'c')],
+    } as unknown as MigrationPlan;
+  }
+
+  it('lists a split module\'s background component and data model exactly once', () => {
+    const md = renderAppScaffoldBrief(splitSiblings());
+    const bg = md.split('\n').filter((l) => l.includes('CallService(service · :phone)'));
+    expect(bg).toHaveLength(1);
+    const dm = md.split('\n').filter((l) => l.includes('CallLog(:phone)'));
+    expect(dm).toHaveLength(1);
+  });
+});
+
+describe('T1-6c · route table excludes xml-layout screens', () => {
+  it('keeps standalone xml-layout screens out of the global route table', () => {
+    const p = planWith([
+      moduleBrief({
+        screens: [
+          { name: 'MainActivity', subtype: 'activity', navigatesTo: [], layouts: [] },
+          { name: 'activity_main', subtype: 'xml-layout', navigatesTo: [], layouts: [] },
+        ],
+      }),
+    ]);
+    const md = renderAppScaffoldBrief(p);
+    expect(md).toContain('MainActivity(:feature · 单元 1)');
+    // The layout resource must NOT appear as a route row.
+    expect(md).not.toContain('activity_main(:feature');
+  });
+});

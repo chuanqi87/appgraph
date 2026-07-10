@@ -22,7 +22,14 @@
 import { AppEdge, AppNode, makeEdgeId } from '../schema';
 import { CodeSymbolGraph } from '../graph-reader';
 import { isTestPath } from '../detect/shared';
+import { parsePrimaryConstructor } from '../detect/kotlin-source';
 import { Node } from '../../types';
+
+/** A type-safe route/Nav3-key parameter surfaced on a navigates_to edge. */
+interface RouteParam {
+  name: string;
+  type: string;
+}
 
 /** Caller-chain traversal bounds: a navigate helper is rarely more than a couple
  *  of hops behind its screen; past that the attribution is app-wide plumbing. */
@@ -69,6 +76,30 @@ export function liftNavigatesToFromCore(
   const coreById = new Map(reader.getAllNodes().map((n) => [n.id, n]));
   const allEdges = reader.getAllEdges();
 
+  // Type-safe route / Nav3-key classes by name, for route parameter recovery: a
+  // `composable<TopicRoute>` / `entry<TopicNavKey>` route node is named after its
+  // key TYPE, whose primary-constructor fields ARE the destination's parameters
+  // (`data class TopicNavKey(val id: String)` → `id: String`). Cross-file (nia
+  // declares the key in a `:api` module, the entry in `:impl`), so the whole-graph
+  // reader is what joins them.
+  const classByName = new Map<string, Node>();
+  for (const n of coreById.values()) {
+    if (n.kind === 'class' && !classByName.has(n.name)) classByName.set(n.name, n);
+  }
+  const routeParamsCache = new Map<string, RouteParam[]>();
+  const routeParamsFor = (routeName: string): RouteParam[] | undefined => {
+    let params = routeParamsCache.get(routeName);
+    if (params === undefined) {
+      const keyClass = classByName.get(routeName);
+      const code = keyClass ? reader.getCode(keyClass) : null;
+      params = code
+        ? parsePrimaryConstructor(code).map((f) => ({ name: f.name, type: f.nullable ? `${f.type}?` : f.type }))
+        : [];
+      routeParamsCache.set(routeName, params);
+    }
+    return params.length > 0 ? params : undefined;
+  };
+
   // route core id → destination composable core nodes (seam-2 `references` edges).
   const routeTargets = new Map<string, Node[]>();
   // core node id → its callers (for a screen that calls a navigate helper).
@@ -108,6 +139,22 @@ export function liftNavigatesToFromCore(
   for (const n of coreById.values()) {
     if (n.kind === 'route') pushInto(routesByFile, n.filePath, n);
   }
+
+  // Circuit screens by their declaring file — a `goTo` is attributed to the
+  // Circuit Screen declared in the SAME file (Circuit colocates screen +
+  // presenter + UI), so the presenter's `goTo` reaches its owning screen even
+  // though the enclosing class is a `*Presenter`, not the `*Screen`.
+  const circuitScreensByFile = new Map<string, AppNode[]>();
+  for (const t of targets) {
+    if (t.kind === 'Screen' && t.attrs?.framework === 'circuit' && t.platformRef?.file) {
+      pushInto(circuitScreensByFile, t.platformRef.file, t);
+    }
+  }
+  const circuitSourceScreen = (fn: Node): AppNode | undefined => {
+    if (isTestPath(fn.filePath)) return undefined;
+    const here = circuitScreensByFile.get(fn.filePath);
+    return here && here.length === 1 ? here[0] : undefined; // exactly-one → attribute, else drop
+  };
 
   const screenOf = (node: Node): AppNode | undefined => {
     const direct = screenBySymbol.get(node.name);
@@ -192,29 +239,44 @@ export function liftNavigatesToFromCore(
   };
 
   const edgeById = new Map<string, AppEdge>();
-  const emit = (kind: 'navigates_to' | 'backed_by', from: AppNode, to: AppNode, liftedFrom: string, confidence: number): void => {
+  const emit = (
+    kind: 'navigates_to' | 'backed_by',
+    from: AppNode,
+    to: AppNode,
+    liftedFrom: string,
+    confidence: number,
+    extraAttrs?: Record<string, unknown>
+  ): void => {
     if (from.id === to.id) return;
     const id = makeEdgeId(kind, from.id, to.id);
     if (edgeById.has(id)) return;
-    edgeById.set(id, { id, kind, from: from.id, to: to.id, provenance: 'lifted', confidence, attrs: { liftedFrom } });
+    edgeById.set(id, {
+      id, kind, from: from.id, to: to.id, provenance: 'lifted', confidence,
+      attrs: { liftedFrom, ...extraAttrs },
+    });
   };
 
-  for (const e of reader.getSynthesizedEdges(['compose-route', 'android-intent', 'android-fragment'])) {
+  for (const e of reader.getSynthesizedEdges(['compose-route', 'android-intent', 'android-fragment', 'circuit-nav'])) {
     const src = coreById.get(e.source);
     if (!src) continue;
 
     if (e.synthesizedBy === 'compose-route') {
       const dests = routeTargets.get(e.target) ?? [];
+      // The route node (synth-edge target) is named after its key TYPE — its
+      // primary-constructor fields are the destination's route parameters.
+      const routeNode = coreById.get(e.target);
+      const routeParams = routeNode ? routeParamsFor(routeNode.name) : undefined;
       let fromScreens = sourceScreensFor(src);
       let confidence = 0.85;
       if (fromScreens.length === 0 && !isTestPath(src.filePath)) {
         fromScreens = importerScreens(src); // method-reference-only helper
         confidence = 0.7;
       }
+      const extra = routeParams ? { routeParams } : undefined;
       for (const dest of dests) {
         const toScreen = screenBySymbol.get(dest.name);
         if (!toScreen) continue;
-        for (const fromScreen of fromScreens) emit('navigates_to', fromScreen, toScreen, 'compose-route', confidence);
+        for (const fromScreen of fromScreens) emit('navigates_to', fromScreen, toScreen, 'compose-route', confidence, extra);
       }
     } else if (e.synthesizedBy === 'android-intent') {
       const targetClass = coreById.get(e.target);
@@ -239,6 +301,20 @@ export function liftNavigatesToFromCore(
       if (!toScreen) continue;
       for (const fromScreen of sourceScreensFor(src)) {
         emit('navigates_to', fromScreen, toScreen, 'android-fragment', 0.8);
+      }
+    } else if (e.synthesizedBy === 'circuit-nav') {
+      // `navigator.goTo(XxxScreen)` → the target Circuit Screen. Source is the
+      // Circuit Screen declared in the goTo's own file (colocation), falling back
+      // to the generic caller-chain attribution when that file has no single
+      // Circuit screen.
+      const targetClass = coreById.get(e.target);
+      if (!targetClass) continue;
+      const toScreen = screenBySymbol.get(targetClass.name);
+      if (!toScreen) continue;
+      const same = circuitSourceScreen(src);
+      const fromScreens = same ? [same] : sourceScreensFor(src);
+      for (const fromScreen of fromScreens) {
+        emit('navigates_to', fromScreen, toScreen, 'circuit-nav', 0.85);
       }
     }
   }

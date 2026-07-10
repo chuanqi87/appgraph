@@ -34,7 +34,13 @@ const ANDROID_PERMISSION_TO_CAPABILITY: Record<string, CapabilityId> = {
   'android.permission.READ_CONTACTS': 'contacts.read',
   'android.permission.WRITE_CONTACTS': 'contacts.write',
   'android.permission.CALL_PHONE': 'phone.call',
+  'android.permission.ANSWER_PHONE_CALLS': 'phone.call',
+  'android.permission.MANAGE_OWN_CALLS': 'phone.call',
+  'android.permission.BIND_INCALL_SERVICE': 'phone.call',
   'android.permission.READ_PHONE_STATE': 'phone.state',
+  'android.permission.MODIFY_PHONE_STATE': 'phone.state',
+  'android.permission.READ_CALL_LOG': 'call-log',
+  'android.permission.WRITE_CALL_LOG': 'call-log',
   'android.permission.SEND_SMS': 'sms.send',
   'android.permission.RECEIVE_SMS': 'sms.receive',
   'android.permission.READ_EXTERNAL_STORAGE': 'storage.read',
@@ -50,9 +56,13 @@ const ANDROID_PERMISSION_TO_CAPABILITY: Record<string, CapabilityId> = {
   'android.permission.FOREGROUND_SERVICE': 'background.foreground-service',
   'android.permission.FOREGROUND_SERVICE_SPECIAL_USE': 'background.foreground-service',
   'android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED': 'background.foreground-service',
+  'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK': 'background.foreground-service',
   'android.permission.WAKE_LOCK': 'background.wakelock',
   'android.permission.RECEIVE_BOOT_COMPLETED': 'background.boot',
   'android.permission.VIBRATE': 'vibrate',
+  'android.permission.CAPTURE_AUDIO_OUTPUT': 'audio.playback',
+  'android.permission.BIND_QUICK_SETTINGS_TILE': 'quick-settings.tile',
+  'android.permission.QUERY_ALL_PACKAGES': 'package.query',
 };
 
 /** Returns the capability for an Android permission, or null if unmapped. */

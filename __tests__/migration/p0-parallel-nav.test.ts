@@ -139,22 +139,35 @@ describe('planUnits — persisted unit dependencies', () => {
     expect(byLabel.get(':app')!.wave).toBe(2);
   });
 
-  it('chains split slices serially (each slice depends on every earlier slice)', () => {
+  const subFeature = (bigId: string, name: string, sig: string, members: string[]): AppNode => ({
+    id: makeNodeId('android', 'Feature', `feature:${sig}`),
+    kind: 'Feature',
+    matchKey: `feature:${sig}`,
+    name,
+    platform: 'android',
+    subtype: 'subdivision',
+    provenance: 'lifted',
+    fidelity: 'source-project',
+    confidence: 0.7,
+    attrs: { sig, moduleSpan: [bigId], members, size: members.length },
+  });
+  const featureDep = (from: AppNode, to: AppNode): AppEdge => ({
+    id: makeEdgeId('depends_on', from.id, to.id),
+    kind: 'depends_on',
+    from: from.id,
+    to: to.id,
+    provenance: 'lifted',
+    confidence: 0.7,
+    attrs: { scope: 'feature' },
+  });
+
+  it('keeps independent split slices in one wave; the rest glue depends on all of them', () => {
     const big = archModule('big', 8000);
-    const sub = (name: string, sig: string, members: string[]): AppNode => ({
-      id: makeNodeId('android', 'Feature', `feature:${sig}`),
-      kind: 'Feature',
-      matchKey: `feature:${sig}`,
-      name,
-      platform: 'android',
-      subtype: 'subdivision',
-      provenance: 'lifted',
-      fidelity: 'source-project',
-      confidence: 0.7,
-      attrs: { sig, moduleSpan: [big.id], members, size: members.length },
-    });
+    const a = subFeature(big.id, 'A', 'siga', ['big/a.kt']);
+    const b = subFeature(big.id, 'B', 'sigb', ['big/b.kt']);
+    // A and B carry NO Feature→Feature edge — they are independent.
     const graph = graphOf([big], []);
-    mergeInto(graph, { nodes: [sub('A', 'siga', ['big/a.kt']), sub('B', 'sigb', ['big/b.kt'])] });
+    mergeInto(graph, { nodes: [a, b] });
 
     const files = new Map([[big.id, ['big/a.kt', 'big/b.kt', 'big/rest.kt']]]);
     const counts = new Map([
@@ -165,12 +178,92 @@ describe('planUnits — persisted unit dependencies', () => {
     const { units } = planUnits(graph.order!, graph, DEFAULT_PLANNING_OPTIONS, files, counts);
 
     expect(units.length).toBe(3); // two feature slices + rest
-    expect(units[0]!.dependsOnUnitIds).toEqual([]);
-    expect(units[0]!.wave).toBe(0);
-    expect(units[1]!.dependsOnUnitIds).toEqual([units[0]!.id]);
-    expect(units[1]!.wave).toBe(1);
-    expect(units[2]!.dependsOnUnitIds.sort()).toEqual([units[0]!.id, units[1]!.id].sort());
-    expect(units[2]!.wave).toBe(2);
+    const [uA, uB, rest] = units;
+    // Independent features share wave 0 (parallel), neither depends on the other.
+    expect(uA!.dependsOnUnitIds).toEqual([]);
+    expect(uA!.wave).toBe(0);
+    expect(uB!.dependsOnUnitIds).toEqual([]);
+    expect(uB!.wave).toBe(0);
+    // The rest glue depends on BOTH feature slices and sits one wave later.
+    expect(rest!.featureSig).toBe('rest');
+    expect(rest!.dependsOnUnitIds.sort()).toEqual([uA!.id, uB!.id].sort());
+    expect(rest!.wave).toBe(1);
+  });
+
+  it('serializes split slices along a real Feature→Feature dependency', () => {
+    const big = archModule('big', 8000);
+    const a = subFeature(big.id, 'A', 'siga', ['big/a.kt']);
+    const b = subFeature(big.id, 'B', 'sigb', ['big/b.kt']);
+    // B depends on A (real Feature edge) → A migrates first, B after.
+    const graph = graphOf([big], []);
+    mergeInto(graph, { nodes: [a, b], edges: [featureDep(b, a)] });
+
+    const files = new Map([[big.id, ['big/a.kt', 'big/b.kt', 'big/rest.kt']]]);
+    const counts = new Map([
+      ['big/a.kt', 4000],
+      ['big/b.kt', 3000],
+      ['big/rest.kt', 1000],
+    ]);
+    const { units } = planUnits(graph.order!, graph, DEFAULT_PLANNING_OPTIONS, files, counts);
+    const byLabel = new Map(units.map((u) => [u.label, u]));
+    const uA = byLabel.get(':big#A')!;
+    const uB = byLabel.get(':big#B')!;
+    const rest = byLabel.get(':big#rest')!;
+
+    expect(uA.dependsOnUnitIds).toEqual([]);
+    expect(uA.wave).toBe(0);
+    expect(uB.dependsOnUnitIds).toEqual([uA.id]);
+    expect(uB.wave).toBe(1);
+    expect(rest.dependsOnUnitIds.sort()).toEqual([uA.id, uB.id].sort());
+    expect(rest.wave).toBe(2);
+  });
+
+  it('re-splits an oversized rest remainder by source directory', () => {
+    const big = archModule('big', 12000);
+    const a = subFeature(big.id, 'A', 'siga', ['big/src/main/java/app/feat/Screen.kt']);
+    const graph = graphOf([big], []);
+    mergeInto(graph, { nodes: [a] });
+
+    // rest = everything except the one covered feature file; ~8000 symbols across
+    // two package directories → over max(3000), so it splits by directory.
+    const files = new Map([
+      [
+        big.id,
+        [
+          'big/src/main/java/app/feat/Screen.kt',
+          'big/src/main/java/app/data/Repo.kt',
+          'big/src/main/java/app/data/Dao.kt',
+          'big/src/main/java/app/ui/View.kt',
+          'big/src/main/java/app/ui/Adapter.kt',
+        ],
+      ],
+    ]);
+    const counts = new Map([
+      ['big/src/main/java/app/feat/Screen.kt', 4000],
+      ['big/src/main/java/app/data/Repo.kt', 1000],
+      ['big/src/main/java/app/data/Dao.kt', 1000],
+      ['big/src/main/java/app/ui/View.kt', 1000],
+      ['big/src/main/java/app/ui/Adapter.kt', 1000],
+    ]);
+    const { units } = planUnits(graph.order!, graph, DEFAULT_PLANNING_OPTIONS, files, counts);
+
+    const restUnits = units.filter((u) => u.featureSig !== 'siga');
+    // Two package directories (app.data, app.ui) → two rest slices, not one monolith.
+    expect(restUnits.length).toBe(2);
+    expect(restUnits.every((u) => u.kind === 'split')).toBe(true);
+    expect(restUnits.map((u) => u.label).sort()).toEqual([':big#rest/app.data', ':big#rest/app.ui']);
+    expect(restUnits.every((u) => u.symbolCount <= DEFAULT_PLANNING_OPTIONS.maxUnitSymbols)).toBe(true);
+    // Each rest slice's files all sit under its own directory.
+    for (const u of restUnits) {
+      const dirs = new Set(u.files!.map((f) => f.slice(0, f.lastIndexOf('/'))));
+      expect(dirs.size).toBe(1);
+    }
+    // Rest slices are independent of each other (parallel), and each depends on
+    // the feature slice (glue after features).
+    const featUnit = units.find((u) => u.featureSig === 'siga')!;
+    for (const u of restUnits) {
+      expect(u.dependsOnUnitIds).toEqual([featUnit.id]);
+    }
   });
 });
 
@@ -419,15 +512,24 @@ describe('detectNavFrameworks', () => {
       endLine: 1,
     }) as unknown as Node;
 
-  it('fingerprints Circuit and reports an explicit blind-spot warning', () => {
+  it('fingerprints an UNCOVERED framework (Conductor) with an explicit blind-spot warning', () => {
     const { frameworks, warnings } = detectNavFrameworks([
-      importNode('com.slack.circuit.runtime.screen.Screen'),
+      importNode('com.bluelinelabs.conductor.Controller'),
       importNode('kotlinx.coroutines.flow.Flow'),
     ]);
-    expect(frameworks).toEqual(['Circuit']);
+    expect(frameworks).toEqual(['Conductor']);
     expect(warnings.length).toBe(1);
-    expect(warnings[0]!.message).toContain('Circuit');
+    expect(warnings[0]!.message).toContain('Conductor');
     expect(warnings[0]!.message).toContain('不完整');
+  });
+
+  it('does NOT flag Circuit — it is statically covered (detectCircuitScreens + circuit-nav)', () => {
+    const { frameworks, warnings } = detectNavFrameworks([
+      importNode('com.slack.circuit.runtime.screen.Screen'),
+      importNode('com.slack.circuit.foundation.Circuit'),
+    ]);
+    expect(frameworks).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   it('stays silent when no framework import is present', () => {

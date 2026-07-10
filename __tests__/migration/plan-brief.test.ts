@@ -111,6 +111,54 @@ describe('P · brief rendering', () => {
     expect(md).toContain('权限能力 [清单]:notification');
   });
 
+  it('renders the DI framework from the fingerprint, not a hard-coded Hilt (P3.2a)', () => {
+    const md = renderUnitBrief(
+      unit(),
+      [
+        brief({
+          di: {
+            framework: 'Metro',
+            modules: ['NetworkModule'],
+            provides: [],
+            binds: [
+              { iface: 'LinkManagerApi', impl: 'LinkManager', via: '@ContributesBinding' },
+              { iface: 'ServiceMeta', impl: 'HomeService', via: '@ContributesIntoMap', multibinding: true },
+            ],
+            injectionPoints: [],
+            scopes: ['AppScope'],
+          },
+        }),
+      ],
+      22
+    );
+    expect(md).toContain('### DI 装配 [静态](源侧 Metro;');
+    expect(md).not.toContain('源侧 Hilt');
+    expect(md).toContain('- Metro 模块:NetworkModule · 作用域 AppScope');
+    expect(md).toContain('@ContributesBinding 绑定:`LinkManagerApi` ← `LinkManager`');
+    expect(md).toContain('@ContributesIntoMap 绑定 [multibinding]:`ServiceMeta` ← `HomeService`');
+  });
+
+  it('labels a framework-less project as 手工装配 (manual DI)', () => {
+    const md = renderUnitBrief(
+      unit(),
+      [
+        brief({
+          di: {
+            framework: 'manual',
+            modules: [],
+            provides: [],
+            binds: [],
+            injectionPoints: [{ name: 'Player', injects: ['Repo'] }],
+            scopes: [],
+          },
+        }),
+      ],
+      22
+    );
+    expect(md).toContain('### DI 装配 [静态](源侧 手工装配;');
+    expect(md).toContain('注入点 `Player` 依赖:Repo');
+  });
+
   it('renders declared vs implied dependencies with provenance tags', () => {
     const md = renderUnitBrief(
       unit(),

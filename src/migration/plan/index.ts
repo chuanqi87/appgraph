@@ -17,13 +17,16 @@ import { Node } from '../../types';
 import { isLayoutHostingEdge } from '../../appgraph/detect/android-structure';
 import { isAndroidViewSuper } from '../../appgraph/detect/roles';
 import { superTypes } from '../../appgraph/detect/kotlin-source';
+import { javaSuperTypes } from '../../appgraph/detect/java-source';
 import { isTestPath } from '../../appgraph/detect/shared';
 import { CodeSymbolGraph } from '../../appgraph/graph-reader';
 import { getPlanDir } from '../paths';
 import { canonicalJson } from '../../appgraph/serialize';
 import { MigrationGraph } from '../types';
+import { ControlNode } from '../../appgraph/detect/resources';
 import {
   AssemblyInput,
+  ControlTree,
   CustomViewBrief,
   FeatureSectionBrief,
   ImpliedDependency,
@@ -145,7 +148,7 @@ export function buildMigrationPlan(
       .filter((n): n is Node => n !== undefined);
     publicInterfaceByModule.set(
       moduleId,
-      [...new Set(extractPublicInterface(nodes).map((x) => x.name))].sort()
+      [...new Set(extractPublicInterface(nodes, input.previewComposableIds).map((x) => x.name))].sort()
     );
   };
 
@@ -243,9 +246,17 @@ export function writeMigrationPlan(
 
   writeFileSync(join(planDir, 'plan.json'), canonicalJson(plan) + '\n', 'utf8');
   const unitRefById = new Map(plan.units.map((u) => [u.id, `${u.order + 1}. ${u.label}`]));
+  // T1-2: a module split into N slices carries its (un-sliceable) module-level
+  // facts (DI / flows / constants / background / permissions / entries / deep
+  // links / test contract) on every slice's brief. Render them IN FULL only on
+  // the module's first slice (smallest order) and point the siblings at it —
+  // plan.json stays complete (MCP still serves whole-module facts); only the
+  // human-facing markdown dedups.
+  const firstSplitOrderByModule = firstSplitSliceOrders(plan.units);
   for (const unit of plan.units) {
     const contract = contracts.get(unit.id);
-    const md = renderUnitBrief(unit, unit.modules, plan.totalUnits, contract, unitRefById);
+    const moduleFactsRef = siblingModuleFactsRef(unit, firstSplitOrderByModule);
+    const md = renderUnitBrief(unit, unit.modules, plan.totalUnits, contract, unitRefById, moduleFactsRef);
     writeFileSync(join(planDir, unit.briefFile), md + '\n', 'utf8');
     if (contract) {
       writeFileSync(join(planDir, unit.contractFile), canonicalJson(contract) + '\n', 'utf8');
@@ -259,6 +270,34 @@ export function writeMigrationPlan(
     writeFileSync(join(planDir, plan.appScaffold.contractFile), canonicalJson(scaffoldContract) + '\n', 'utf8');
   }
   return planDir;
+}
+
+/** module id → its split slices' smallest order (the module's "first slice"). */
+function firstSplitSliceOrders(units: UnitPlan[]): Map<string, number> {
+  const firstOrder = new Map<string, number>();
+  for (const u of units) {
+    if (u.kind !== 'split' || u.moduleIds.length !== 1) continue;
+    const moduleId = u.moduleIds[0]!;
+    const prev = firstOrder.get(moduleId);
+    if (prev === undefined || u.order < prev) firstOrder.set(moduleId, u.order);
+  }
+  return firstOrder;
+}
+
+/**
+ * The 1-based unit number a split SIBLING should point its shared module-level
+ * facts at (its module's first slice), or undefined when this unit is the first
+ * slice itself / not a split (render facts in full). Determined purely by order,
+ * so the pointer target is stable (T1-2).
+ */
+function siblingModuleFactsRef(
+  unit: UnitPlan,
+  firstSplitOrderByModule: Map<string, number>
+): string | undefined {
+  if (unit.kind !== 'split' || unit.moduleIds.length !== 1) return undefined;
+  const firstOrder = firstSplitOrderByModule.get(unit.moduleIds[0]!);
+  if (firstOrder === undefined || unit.order === firstOrder) return undefined;
+  return String(firstOrder + 1);
 }
 
 /** `03-corecommon` — order-sortable, filesystem-friendly base for brief+contract. */
@@ -297,6 +336,7 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
   const moduleIdToNodeIds = assignNodeIdsByModule(nodes, moduleDirs, moduleDirToId);
   const customViewsByModule = detectCustomViews(reader, moduleIdToNodeIds, nodeById);
   const featureSectionsByModule = buildFeatureSections(graph, moduleIdToNodeIds, nodeById);
+  const previewComposableIds = detectPreviewComposables(reader, nodes);
 
   // Declared depends_on is the ground truth; lifted coupling is advisory.
   // Test-scoped declared deps (testImplementation/…) are kept apart: they are
@@ -338,6 +378,10 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
   const nodeByAppId = new Map(graph.nodes.map((n) => [n.id, n]));
   const layoutsByScreenId = new Map<string, string[]>();
   const hostedLayoutIds = new Set<string>();
+  // Control trees (T2) are carried on the screen that renders the layout: a
+  // hosting Activity/Fragment gets its hosted layout's tree here; a standalone
+  // (un-hosted) xml-layout screen gets its own tree in the second pass below.
+  const controlsByScreenId = new Map<string, ControlTree[]>();
   for (const e of graph.edges) {
     if (!isLayoutHostingEdge(e)) continue;
     const layout = nodeByAppId.get(e.to);
@@ -346,11 +390,24 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     const list = layoutsByScreenId.get(e.from) ?? [];
     if (!list.includes(layout.name)) list.push(layout.name);
     layoutsByScreenId.set(e.from, list);
+    const tree = toControlTree(layout);
+    if (tree) pushControlTree(controlsByScreenId, e.from, tree);
   }
   for (const [k, v] of layoutsByScreenId) layoutsByScreenId.set(k, v.sort());
+  // A standalone xml-layout Screen (no host found it) surfaces as its own screen,
+  // so its control tree attaches to itself.
+  for (const n of graph.nodes) {
+    if (n.kind !== 'Screen' || n.subtype !== 'xml-layout' || hostedLayoutIds.has(n.id)) continue;
+    const tree = toControlTree(n);
+    if (tree) pushControlTree(controlsByScreenId, n.id, tree);
+  }
+  for (const [k, v] of controlsByScreenId) {
+    controlsByScreenId.set(k, v.sort((a, b) => a.layout.localeCompare(b.layout)));
+  }
 
   // Per-module semantic ownership, read off the U/S2-enriched graph.
   const screensByModule = new Map<string, AppNode[]>();
+  const resourcesByModule = new Map<string, AppNode[]>();
   const dataModelsByModule = new Map<string, AppNode[]>();
   const backgroundByModule = new Map<string, AppNode[]>();
   const appEntriesByModule = new Map<string, string[]>();
@@ -362,6 +419,10 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     owningModuleByNodeId.set(target.id, e.from);
     if (target.kind === 'Screen') {
       if (!hostedLayoutIds.has(target.id)) pushTo(screensByModule, e.from, target);
+    } else if (target.kind === 'Resource') {
+      // Only res/values inventory nodes (byType) — deep-link Resources aren't
+      // app_contained, but guard so they can never leak into the inventory.
+      if (target.attrs?.byType) pushTo(resourcesByModule, e.from, target);
     } else if (target.kind === 'DataModel') {
       pushTo(dataModelsByModule, e.from, target);
     } else if (target.kind === 'BackgroundComponent') {
@@ -420,8 +481,10 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     moduleTestDeps,
     liftedDeps,
     screensByModule,
+    resourcesByModule,
     dataModelsByModule,
     navTargetsByScreenId,
+    controlsByScreenId,
     permissionCapsByModule,
     backgroundByModule,
     appEntriesByModule,
@@ -429,7 +492,39 @@ export function buildAssemblyInput(graph: MigrationGraph, reader: CodeSymbolGrap
     layoutsByScreenId,
     customViewsByModule,
     featureSectionsByModule,
+    previewComposableIds,
   };
+}
+
+/**
+ * Detect `@Preview`/`@DevicePreviews` composables (T1-3): top-level Kotlin
+ * functions whose annotation header carries a Compose preview marker. These are
+ * tooling-only entry points, not real public surface, so they are excluded from
+ * every public-interface extraction. Only `function`-kind nodes are read — a
+ * preview is a top-level function, and only top-level functions ever reach the
+ * public interface, so class methods need no source read.
+ */
+function detectPreviewComposables(reader: CodeSymbolGraph, nodes: Node[]): Set<string> {
+  const out = new Set<string>();
+  for (const node of nodes) {
+    if (node.kind !== 'function') continue;
+    if (node.language !== 'kotlin' || isTestPath(node.filePath)) continue;
+    if (node.name.startsWith('<')) continue;
+    const code = reader.getCode(node);
+    if (code === null) continue;
+    // The node span starts at the annotation header (same as constants' @Query
+    // scan), so only inspect the text before the `fun` keyword — a `@Preview`
+    // mentioned inside the body must not count.
+    const head = code.slice(0, headerEnd(code));
+    if (/@(?:Preview|DevicePreviews)\b/.test(head)) out.add(node.id);
+  }
+  return out;
+}
+
+/** Offset of the declaration's `fun` keyword (annotations/modifiers precede it). */
+function headerEnd(code: string): number {
+  const m = /(^|\s)fun\b/.exec(code);
+  return m ? m.index + m[0].length : code.length;
 }
 
 /**
@@ -484,6 +579,10 @@ function buildFeatureSections(
  * Android View base. Reads each class's source header once (cached per file) and
  * checks the recovered supertypes — the code graph's `extends` edge can't help
  * here because the framework View base has no node in the repo's graph.
+ *
+ * Kotlin (`: Base`) and Java (`extends Base`) declare inheritance differently, so
+ * the supertype is recovered with the language-specific parser (P3.2a: the old
+ * kotlin-only gate silently dropped every Java custom View — ~26 in AntennaPod).
  */
 function detectCustomViews(
   reader: CodeSymbolGraph,
@@ -496,11 +595,12 @@ function detectCustomViews(
     for (const id of nodeIds) {
       const node = nodeById.get(id);
       if (!node || node.kind !== 'class') continue;
-      if (node.language !== 'kotlin') continue; // superTypes parses Kotlin headers
+      if (node.language !== 'kotlin' && node.language !== 'java') continue;
       if (isTestPath(node.filePath) || node.name.startsWith('<')) continue;
       const code = reader.getCode(node);
       if (code === null) continue;
-      const viewSuper = superTypes(code).find(isAndroidViewSuper);
+      const supers = node.language === 'java' ? javaSuperTypes(code) : superTypes(code);
+      const viewSuper = supers.find(isAndroidViewSuper);
       if (viewSuper) views.push({ name: node.name, superClass: viewSuper, file: node.filePath });
     }
     if (views.length > 0) out.set(moduleId, views);
@@ -510,6 +610,26 @@ function detectCustomViews(
 
 function asByKind(v: unknown): Record<string, number> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, number>) : {};
+}
+
+/** A layout Screen node → its carried control tree (T2), or undefined if none. */
+function toControlTree(layout: AppNode): ControlTree | undefined {
+  const attrs = layout.attrs ?? {};
+  const root = attrs.controlTree;
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return undefined;
+  return {
+    layout: layout.name,
+    controlCount: typeof attrs.totalControls === 'number' ? attrs.totalControls : 0,
+    root: root as ControlNode,
+    ...(attrs.controlTreeTruncated === true ? { truncated: true } : {}),
+  };
+}
+
+/** Attach a control tree to a screen, deduped by layout name. */
+function pushControlTree(map: Map<string, ControlTree[]>, screenId: string, tree: ControlTree): void {
+  const list = map.get(screenId) ?? [];
+  if (!list.some((t) => t.layout === tree.layout)) list.push(tree);
+  map.set(screenId, list);
 }
 
 /** Append a node to a module's list in a Map-of-arrays. */

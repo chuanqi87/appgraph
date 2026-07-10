@@ -34,6 +34,10 @@ export interface GradleModule {
   applicationId: string | null;
   /** Gradle module dependencies (raw, before resolution). */
   dependencyPaths: GradleDependency[];
+  /** Product flavor names declared literally in `productFlavors { … }` (sorted). */
+  flavors: string[];
+  /** Flavor dimension names declared via `flavorDimensions` (sorted). */
+  flavorDimensions: string[];
 }
 
 export interface GradleExtraction {
@@ -77,13 +81,111 @@ export function parseGradleModule(dir: string, source: string): GradleModule {
     if (m[3]) add(`:${m[3].split('.').join(':')}`, scopeOf(m[1] ?? m[2]));
   }
 
+  const { flavors, flavorDimensions } = parseFlavors(source);
+
   return {
     path: dirToGradlePath(dir),
     dir,
     namespace,
     applicationId,
     dependencyPaths: [...scopeByPath.entries()].map(([path, scope]) => ({ path, scope })),
+    flavors,
+    flavorDimensions,
   };
+}
+
+/**
+ * Recover a module's product flavors + flavor dimensions from its build file.
+ * Handles the Kotlin DSL (`productFlavors { create("demo") { … } }` /
+ * `register(...)` / `getByName(...)`) and Groovy's bare `productFlavors { demo {
+ * … } }`. Deterministic, string-aware (a `{` inside a literal can't unbalance the
+ * block). Convention-plugin-defined flavors (e.g. nowinandroid's enum-driven
+ * `NiaFlavor`) are NOT literal here and stay uncovered — a partial by design.
+ */
+export function parseFlavors(source: string): { flavors: string[]; flavorDimensions: string[] } {
+  const dimensions = new Set<string>();
+  for (const m of source.matchAll(/\bflavorDimensions\b\s*(?:\+?=)?\s*([^\n{}]*)/g)) {
+    for (const q of (m[1] ?? '').matchAll(/["']([^"']+)["']/g)) dimensions.add(q[1]!);
+  }
+
+  const flavors = new Set<string>();
+  const block = braceBlock(source, /\bproductFlavors\b\s*\{/);
+  if (block !== null) {
+    for (const m of block.matchAll(/\b(?:create|register|getByName|maybeCreate)\s*\(\s*["']([^"']+)["']/g)) {
+      flavors.add(m[1]!);
+    }
+    for (const name of topLevelFlavorNames(block)) flavors.add(name);
+  }
+  return { flavors: [...flavors].sort(), flavorDimensions: [...dimensions].sort() };
+}
+
+/** Groovy bare flavor declarations (`demo { … }`) at the block's top level. */
+const RESERVED_FLAVOR_TOKENS = new Set(['all', 'configureEach', 'whenObjectAdded']);
+
+function topLevelFlavorNames(block: string): string[] {
+  const names: string[] = [];
+  let depth = 0;
+  let str: string | null = null;
+  const n = block.length;
+  let i = 0;
+  while (i < n) {
+    const c = block[i]!;
+    if (str) {
+      if (c === '\\') i += 2;
+      else {
+        if (c === str) str = null;
+        i++;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") { str = c; i++; continue; }
+    if (c === '{') { depth++; i++; continue; }
+    if (c === '}') { depth--; i++; continue; }
+    if (depth === 0 && /[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < n && /[A-Za-z0-9_]/.test(block[j]!)) j++;
+      const ident = block.slice(i, j);
+      let k = j;
+      while (k < n && /\s/.test(block[k]!)) k++;
+      if (block[k] === '{' && !RESERVED_FLAVOR_TOKENS.has(ident)) {
+        names.push(ident);
+        i = k; // continue past the identifier; the `{` is handled next loop
+      } else {
+        i = j;
+      }
+      continue;
+    }
+    i++;
+  }
+  return names;
+}
+
+/**
+ * The body inside the first balanced `{ … }` whose opening `{` is matched by
+ * `open` (a regex ending in `{`), or null. String-aware so a brace inside a
+ * literal can't unbalance the scan.
+ */
+function braceBlock(source: string, open: RegExp): string | null {
+  const m = open.exec(source);
+  if (!m) return null;
+  const start = m.index + m[0].length - 1; // index of the opening `{`
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = start; i < source.length; i++) {
+    const c = source[i]!;
+    if (str) {
+      if (c === '\\') i++;
+      else if (c === str) str = null;
+      continue;
+    }
+    if (c === '"' || c === "'") str = c;
+    else if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return source.slice(start + 1, i);
+    }
+  }
+  return null;
 }
 
 /**
@@ -113,7 +215,16 @@ export function buildModuleGraph(modules: GradleModule[]): GradleExtraction {
       provenance: 'manifest',
       fidelity: 'source-project',
       confidence: 1,
-      attrs: { dir: mod.dir, namespace: mod.namespace, role, layer, necessity },
+      attrs: {
+        dir: mod.dir,
+        namespace: mod.namespace,
+        role,
+        layer,
+        necessity,
+        // Only attach when present so flavor-less modules stay byte-identical.
+        ...(mod.flavors.length > 0 ? { flavors: mod.flavors } : {}),
+        ...(mod.flavorDimensions.length > 0 ? { flavorDimensions: mod.flavorDimensions } : {}),
+      },
     });
     moduleDirToId.set(mod.dir, id);
     idBySlug.set(slug(mod.path), id);

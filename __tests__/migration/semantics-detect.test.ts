@@ -16,6 +16,8 @@ import { detectComposeScreens } from '../../src/appgraph/detect/compose';
 import { detectEntities } from '../../src/appgraph/detect/entities';
 import { detectDi } from '../../src/appgraph/detect/di';
 import { detectFlows } from '../../src/appgraph/detect/flows';
+import { countNavigableScreens, navCoverageWarnings } from '../../src/appgraph/detect/semantics';
+import { AppNode } from '../../src/appgraph/schema';
 
 interface Fixture {
   nodes: Node[];
@@ -113,6 +115,19 @@ describe('U2 · compose screens', () => {
     // covered end-to-end by __tests__/appgraph-navigation-lift.test.ts).
     expect(res.navEdges).toEqual([]);
   });
+
+  it('T1-6a · excludes private composables and @Preview/@DevicePreviews renders', () => {
+    // Every candidate below would qualify by name/param — only the visibility &
+    // preview filters keep the tally honest.
+    const f = buildFixture([
+      { kind: 'function', name: 'RealScreen', module: 'feature/x', code: '@Composable\nfun RealScreen(nav: NavController) {}' },
+      { kind: 'function', name: 'HelperScreen', module: 'feature/x', code: '@Composable\nprivate fun HelperScreen(nav: NavController) {}' },
+      { kind: 'function', name: 'SettingsScreen', module: 'feature/x', code: '@Preview\n@Composable\nfun SettingsScreen() {}' },
+      { kind: 'function', name: 'GalleryPage', module: 'feature/x', code: '@DevicePreviews\n@Composable\nfun GalleryPage() {}' },
+    ]);
+    const names = detectComposeScreens(f.nodes, f.readCode, f.ctx).screenNodes.map((n) => n.name);
+    expect(names).toEqual(['RealScreen']); // private + preview + multipreview all excluded
+  });
 });
 
 describe('U3 · entities + field schema', () => {
@@ -170,6 +185,69 @@ describe('U5 · reactive flows', () => {
     const facts = res.flowsByModule.get('mod:feature/foryou')!;
     expect(facts.exposedStates.map((s) => s.name).sort()).toEqual(['feed', 'uiState']);
     expect(facts.collectPoints).toBeGreaterThan(0);
+  });
+
+  it('T1-5a · preserves nested generic type args whole (balanced angle brackets)', () => {
+    const f = buildFixture([
+      { kind: 'class', name: 'NavViewModel', module: 'feature/nav', code:
+        'class NavViewModel {\n' +
+        '  val backStack: StateFlow<Set<NavKey>> = x\n' +
+        '  val grid: Flow<Map<String, List<Item>>> = y\n' +
+        '}' },
+    ]);
+    const facts = detectFlows(f.nodes, f.readCode, f.ctx).flowsByModule.get('mod:feature/nav')!;
+    const byName = new Map(facts.exposedStates.map((s) => [s.name, s.type]));
+    // Non-nesting `<([^>]*)>` would truncate these to `Set<NavKey` / `Map<String, List<Item`.
+    expect(byName.get('backStack')).toBe('Set<NavKey>');
+    expect(byName.get('grid')).toBe('Map<String, List<Item>>');
+  });
+});
+
+describe('T1-6b · navigable Screen count excludes xml-layout', () => {
+  const screen = (name: string, subtype: string): AppNode => ({
+    id: `android:Screen:${name}`,
+    kind: 'Screen',
+    matchKey: `screen:${name}`,
+    name,
+    platform: 'android',
+    subtype,
+    provenance: 'source-static',
+    fidelity: 'source-project',
+    confidence: 0.9,
+  });
+
+  it('counts real destinations, not bare layout files', () => {
+    const nodes: AppNode[] = [
+      screen('HomeScreen', 'compose'),
+      screen('DetailScreen', 'compose'),
+      screen('activity_main', 'xml-layout'),
+      screen('item_row', 'xml-layout'),
+      screen('list_header', 'xml-layout'),
+    ];
+    expect(countNavigableScreens(nodes)).toBe(2); // 5 Screen nodes, 3 are layouts
+  });
+
+  it('the empty-nav warning reports the navigable count, not the inflated total', () => {
+    // 16 real screens + 19 layout stand-ins (koler shape): the guard must fire on
+    // 16, and its message must not read "35".
+    const navigable = 16;
+    const total = 35;
+    const out = navCoverageWarnings(
+      { screenCount: total, navigableScreenCount: navigable, totalNavEdges: 0, activityScreens: 0, appEntries: 0 },
+      () => 0
+    ).map((w) => w.message);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain('识别出 16 个 Screen');
+    expect(out[0]).not.toContain('35');
+  });
+
+  it('omitting navigableScreenCount falls back to screenCount (back-compat)', () => {
+    const out = navCoverageWarnings(
+      { screenCount: 8, totalNavEdges: 0, activityScreens: 0, appEntries: 0 },
+      () => 0
+    ).map((w) => w.message);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain('识别出 8 个 Screen');
   });
 });
 

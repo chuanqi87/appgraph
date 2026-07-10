@@ -31,6 +31,7 @@ export const CAPABILITY_IDS = [
   'contacts.write',
   'phone.call',
   'phone.state',
+  'call-log',
   'sms.send',
   'sms.receive',
   'storage.read',
@@ -45,6 +46,8 @@ export const CAPABILITY_IDS = [
   'background.job',
   'vibrate',
   'audio.playback',
+  'quick-settings.tile',
+  'package.query',
 ] as const;
 export type CapabilityId = (typeof CAPABILITY_IDS)[number];
 

@@ -17,9 +17,15 @@
 import { CoverageWarning } from '../schema';
 import { Node } from '../../types';
 
-/** Import-prefix fingerprints of navigation frameworks the passes do NOT cover. */
+/**
+ * Import-prefix fingerprints of navigation frameworks the passes do NOT cover.
+ *
+ * Circuit is intentionally ABSENT: its screens (`… : Screen` / `@CircuitInject`)
+ * and `navigator.goTo(XxxScreen)` navigation are now recovered statically
+ * (`detectCircuitScreens` + the `circuit-nav` synthesizer/lift), so it is a
+ * covered framework, not a blind spot — flagging it would be a false warning.
+ */
 const NAV_FRAMEWORK_FINGERPRINTS: ReadonlyArray<{ prefix: string; name: string }> = [
-  { prefix: 'com.slack.circuit', name: 'Circuit' },
   { prefix: 'com.bluelinelabs.conductor', name: 'Conductor' },
   { prefix: 'com.github.terrakok.cicerone', name: 'Cicerone' },
   { prefix: 'ru.terrakok.cicerone', name: 'Cicerone' },

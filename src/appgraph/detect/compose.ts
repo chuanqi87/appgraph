@@ -105,8 +105,16 @@ function collectScreens(nodes: Node[], readCode: ReadCode, ctx: DetectContext): 
   for (const node of sorted) {
     const code = readCode(node);
     if (code === null) continue;
-    if (!leadingAnnotations(code).includes('Composable')) continue;
-    const isScreen = SCREEN_NAME_RE.test(node.name) || NAV_PARAM_RE.test(sanitizeKotlin(code));
+    const annotations = leadingAnnotations(code);
+    if (!annotations.includes('Composable')) continue;
+    // Previews (`@Preview` and grouped multi-previews like `@DevicePreviews`) are
+    // sample renders, and a `private fun` is an internal helper composable —
+    // neither is a navigable destination, so excluding both keeps the V1
+    // screen-count honest (koler-style layout/preview inflation).
+    if (annotations.some((a) => /Previews?$/.test(a))) continue;
+    const sanitized = sanitizeKotlin(code);
+    if (hasPrivateModifier(sanitized)) continue;
+    const isScreen = SCREEN_NAME_RE.test(node.name) || NAV_PARAM_RE.test(sanitized);
     if (!isScreen) continue;
 
     const matchKey = screenMatchKey(node.name);
@@ -119,6 +127,28 @@ function collectScreens(nodes: Node[], readCode: ReadCode, ctx: DetectContext): 
     );
   }
   return [...byMatchKey.values()];
+}
+
+/**
+ * True when the function carries a `private` visibility modifier. Scans the
+ * header before `fun` at bracket-depth 0 so a `private` appearing inside an
+ * annotation argument (e.g. `@RequiresPermission(...)`) is never mistaken for the
+ * declaration's own visibility. Operates on sanitized source.
+ */
+function hasPrivateModifier(sanitized: string): boolean {
+  const funIdx = /\bfun\b/.exec(sanitized)?.index ?? -1;
+  if (funIdx === -1) return false;
+  const header = sanitized.slice(0, funIdx);
+  let depth = 0;
+  const tokens = /[A-Za-z_]\w*|[()<>[\]{}]/g;
+  let t: RegExpExecArray | null;
+  while ((t = tokens.exec(header)) !== null) {
+    const tok = t[0];
+    if (tok === '(' || tok === '<' || tok === '[' || tok === '{') depth++;
+    else if (tok === ')' || tok === '>' || tok === ']' || tok === '}') depth--;
+    else if (depth === 0 && tok === 'private') return true;
+  }
+  return false;
 }
 
 /** ArchModule → Screen containment (attribute each screen to its owning module). */
@@ -149,4 +179,152 @@ function dedupeById(nodes: AppNode[]): AppNode[] {
 
 function countDistinct(screens: Screen[]): number {
   return new Set(screens.map((s) => s.id)).size;
+}
+
+// --- Circuit screens (Slack Circuit) ------------------------------------------
+
+/** `@CircuitInject(XxxScreen::class, AppScope::class)` — the first `::class` arg. */
+const CIRCUIT_INJECT_RE = /@CircuitInject\s*\(\s*([A-Z]\w*)\s*::\s*class/g;
+
+export interface CircuitResult {
+  screenNodes: AppNode[];
+  containsEdges: AppEdge[];
+  stats: { screenCount: number };
+}
+
+/**
+ * Detect Slack Circuit Screen nodes. A Circuit screen is the `class`/`object`
+ * that IS the navigation key — a `… : Screen` (the marker interface) — surfaced
+ * by two independent, precise signals:
+ *   - the class declares `: Screen` (supertype), OR
+ *   - a `@CircuitInject(XxxScreen::class, …)` names it (its UI/presenter wiring).
+ * Both key on the class NAME, which is exactly what `goTo(XxxScreen)` targets, so
+ * the `circuit-nav` lift connects navigation to these nodes. Circuit renders
+ * Compose, so screens carry `subtype: 'compose'` with `attrs.framework: 'circuit'`.
+ */
+export function detectCircuitScreens(
+  nodes: Node[],
+  readCode: ReadCode,
+  ctx: DetectContext
+): CircuitResult {
+  const classByName = new Map<string, Node[]>();
+  for (const n of nodes) {
+    if (n.kind === 'class' && isShippableJvmNode(n)) {
+      const arr = classByName.get(n.name);
+      if (arr) arr.push(n);
+      else classByName.set(n.name, [n]);
+    }
+  }
+
+  // signal → the strongest signal seen for each screen class node.
+  const signalByNode = new Map<string, { node: Node; signal: 'circuit-inject' | 'circuit-screen' }>();
+  const mark = (node: Node, signal: 'circuit-inject' | 'circuit-screen'): void => {
+    const prev = signalByNode.get(node.id);
+    // circuit-inject (explicit UI wiring) outranks a bare supertype match.
+    if (!prev || (signal === 'circuit-inject' && prev.signal !== 'circuit-inject')) {
+      signalByNode.set(node.id, { node, signal });
+    }
+  };
+
+  // A class name resolving to exactly one shippable class node — never guess.
+  const resolveOne = (name: string): Node | undefined => {
+    const arr = classByName.get(name);
+    return arr && arr.length === 1 ? arr[0] : undefined;
+  };
+
+  const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  for (const node of sorted) {
+    if (!isShippableJvmNode(node)) continue;
+    const code = readCode(node);
+    if (code === null) continue;
+
+    // Signal A · supertype `: Screen` on a class/object declaration.
+    if (node.kind === 'class' && declaresScreenSupertype(code)) mark(node, 'circuit-screen');
+
+    // Signal B · `@CircuitInject(XxxScreen::class, …)` on any declaration.
+    if (code.includes('@CircuitInject')) {
+      CIRCUIT_INJECT_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = CIRCUIT_INJECT_RE.exec(code)) !== null) {
+        const target = resolveOne(m[1]!);
+        if (target) mark(target, 'circuit-inject');
+      }
+    }
+  }
+
+  const byMatchKey = new Map<string, AppNode>();
+  const containsEdges = new Map<string, AppEdge>();
+  for (const { node, signal } of signalByNode.values()) {
+    const matchKey = screenMatchKey(node.name);
+    if (byMatchKey.has(matchKey)) continue; // id-sorted iteration → stable winner
+    const id = makeNodeId('android', 'Screen', matchKey);
+    byMatchKey.set(matchKey, {
+      id,
+      kind: 'Screen',
+      matchKey,
+      name: node.name,
+      platform: 'android',
+      subtype: 'compose',
+      provenance: 'source-static',
+      fidelity: 'source-project',
+      confidence: signal === 'circuit-inject' ? 0.9 : 0.8,
+      platformRef: { file: node.filePath, symbol: node.name },
+      attrs: { framework: 'circuit', signal },
+    });
+    const moduleId = ctx.nodeToModuleId.get(node.id);
+    if (moduleId) {
+      const edgeId = makeEdgeId('app_contains', moduleId, id);
+      if (!containsEdges.has(edgeId)) {
+        containsEdges.set(edgeId, {
+          id: edgeId,
+          kind: 'app_contains',
+          from: moduleId,
+          to: id,
+          provenance: 'source-static',
+          confidence: 0.8,
+          attrs: { kind: 'screen' },
+        });
+      }
+    }
+  }
+
+  return {
+    screenNodes: [...byMatchKey.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    containsEdges: [...containsEdges.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    stats: { screenCount: byMatchKey.size },
+  };
+}
+
+/**
+ * True when a class/object declaration lists the Circuit `Screen` marker among
+ * its supertypes. Strips the primary constructor `(…)` first so a `Screen`-typed
+ * constructor/entry PARAMETER (`class DrawerScreen(val screen: Screen)`,
+ * `enum class C(val screen: Screen)`) is never mistaken for a supertype.
+ */
+function declaresScreenSupertype(code: string): boolean {
+  const sanitized = sanitizeKotlin(code);
+  let paren = 0;
+  let angle = 0;
+  let header = sanitized;
+  for (let i = 0; i < sanitized.length; i++) {
+    const ch = sanitized[i]!;
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (ch === '<') angle++;
+    else if (ch === '>') angle--;
+    else if (ch === '{' && paren === 0 && angle === 0) {
+      header = sanitized.slice(0, i);
+      break;
+    }
+  }
+  let withoutCtor = '';
+  let depth = 0;
+  for (const ch of header) {
+    if (ch === '(') depth++;
+    else if (ch === ')') { if (depth > 0) depth--; }
+    else if (depth === 0) withoutCtor += ch;
+  }
+  const colon = withoutCtor.indexOf(':');
+  if (colon === -1) return false;
+  return /(?:^|[\s,])Screen\b/.test(withoutCtor.slice(colon + 1));
 }

@@ -95,6 +95,41 @@ describe('B3 · gradle dependency scope', () => {
     expect(byPath.get(':core:harness')).toBe('test');
   });
 
+  it('parses product flavors + flavor dimensions (Kotlin DSL and Groovy), surfaced on the module node', () => {
+    const kts = `android {
+      flavorDimensions += "environment"
+      productFlavors {
+        create("demo") { dimension = "environment" }
+        register("prod") { dimension = "environment" }
+      }
+    }`;
+    const mod = parseGradleModule('app', kts);
+    expect(mod.flavors).toEqual(['demo', 'prod']);
+    expect(mod.flavorDimensions).toEqual(['environment']);
+    const { nodes } = buildModuleGraph([mod]);
+    expect(nodes[0]!.attrs?.flavors).toEqual(['demo', 'prod']);
+    expect(nodes[0]!.attrs?.flavorDimensions).toEqual(['environment']);
+
+    // Groovy bare form.
+    const groovy = `android {
+      flavorDimensions "tier"
+      productFlavors {
+        free { dimension "tier" }
+        paid { dimension "tier" }
+      }
+    }`;
+    const g = parseGradleModule('app', groovy);
+    expect(g.flavors).toEqual(['free', 'paid']);
+    expect(g.flavorDimensions).toEqual(['tier']);
+
+    // A flavor-less module carries no flavor attrs (byte-stability for the common case).
+    const plain = parseGradleModule('core/data', 'android { namespace = "x" }');
+    expect(plain.flavors).toEqual([]);
+    const { nodes: plainNodes } = buildModuleGraph([plain]);
+    expect(plainNodes[0]!.attrs?.flavors).toBeUndefined();
+    expect(plainNodes[0]!.attrs?.flavorDimensions).toBeUndefined();
+  });
+
   it('marks test-scoped depends_on edges and topo ordering ignores them', () => {
     const app = parseGradleModule('app', 'implementation(project(":lib"))\ntestImplementation(project(":testing"))');
     const lib = parseGradleModule('lib', '');

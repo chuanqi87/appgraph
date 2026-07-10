@@ -360,6 +360,49 @@ export function functionParts(code: string): FunctionParts {
   return { paramTypes, returnType };
 }
 
+/**
+ * The type an EXPRESSION-BODY function produces, inferred from the constructor /
+ * factory call at the head of its `= Expr` body — for the `@Provides fun x() =
+ * SomeImpl(...)` form that omits the return type, where `functionParts` returns
+ * `returnType: null` (it only reads an explicit `: Type`). Deliberately narrow:
+ * only a `TypeName(...)` constructor call (or a bare Capitalized reference) whose
+ * leading identifier is PascalCase is treated as the provided type. A lowercase
+ * head (a factory/property call like `retrofit.create(...)`) yields null — we
+ * NEVER return function-body text as a type. Returns null for a block body
+ * (`{ … }`) or an explicit return type (both handled by `functionParts`).
+ */
+export function expressionBodyType(code: string): string | null {
+  const sanitized = sanitizeKotlin(code);
+  const funIdx = /\bfun\b/.exec(sanitized)?.index ?? -1;
+  if (funIdx === -1) return null;
+  let i = funIdx + 3;
+  const n = sanitized.length;
+  while (i < n && sanitized[i] !== '(') {
+    if (sanitized[i] === '{' || sanitized[i] === '=') return null;
+    i++;
+  }
+  if (sanitized[i] !== '(') return null;
+  const close = matchBracket(sanitized, i);
+  if (close === -1) return null;
+
+  let r = close + 1;
+  while (r < n && /\s/.test(sanitized[r]!)) r++;
+  if (sanitized[r] !== '=') return null; // block body / explicit `: Type` → functionParts owns it
+  let e = r + 1;
+  while (e < n && /\s/.test(sanitized[e]!)) e++;
+  const m = /^[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*/.exec(sanitized.slice(e));
+  if (!m) return null;
+  const path = m[0];
+  const simple = path.slice(path.lastIndexOf('.') + 1);
+  if (!/^[A-Z]/.test(simple)) return null; // lowercase head = factory/property call — can't infer
+  let after = e + path.length;
+  while (after < n && /\s/.test(sanitized[after]!)) after++;
+  const nextCh = sanitized[after];
+  // `Type(...)` constructor call, or a bare Capitalized reference (`= Singleton`).
+  if (nextCh === '(' || nextCh === undefined || nextCh === '\n' || nextCh === ';') return simple;
+  return null;
+}
+
 /** The supertype list after `:` in a class/object header (interfaces + base class). */
 export function superTypes(code: string): string[] {
   const sanitized = sanitizeKotlin(code);

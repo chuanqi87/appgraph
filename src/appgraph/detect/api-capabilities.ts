@@ -406,6 +406,33 @@ export const CAPABILITY_SPECS: CapabilitySpec[] = [
       note: '写联系人 → contact.addContact / updateContact;权限 ohos.permission.WRITE_CONTACTS',
     },
   },
+  {
+    id: 'call-log',
+    kind: 'permission',
+    apiPrefixes: [],
+    harmony: {
+      module: '(受限/待裁决)',
+      note: '通话记录读写(READ/WRITE_CALL_LOG)→ 鸿蒙通话记录访问受系统管控,第三方应用通常无等价公开能力;平台可行性待裁决',
+    },
+  },
+  {
+    id: 'quick-settings.tile',
+    kind: 'permission',
+    apiPrefixes: [],
+    harmony: {
+      module: '(无直接等价,待裁决)',
+      note: 'TileService/快捷设置磁贴(BIND_QUICK_SETTINGS_TILE)→ 鸿蒙控制中心无第三方磁贴等价机制;平台可行性待裁决',
+    },
+  },
+  {
+    id: 'package.query',
+    kind: 'permission',
+    apiPrefixes: [],
+    harmony: {
+      module: '@ohos.bundle.bundleManager',
+      note: '查询已安装应用列表(QUERY_ALL_PACKAGES)→ bundleManager.getAllBundleInfo;需 ohos.permission.GET_INSTALLED_BUNDLE_LIST(受管控)',
+    },
+  },
 ];
 
 const SPEC_BY_ID = new Map(CAPABILITY_SPECS.map((s) => [s.id, s]));
@@ -426,6 +453,47 @@ export function apiToCapability(importFqn: string): string | null {
 /** The HarmonyOS translation target for a capability id, or null if unknown. */
 export function harmonyTargetFor(capabilityId: string): HarmonyTarget | null {
   return SPEC_BY_ID.get(capabilityId)?.harmony ?? null;
+}
+
+/** RxJava flavor of `concurrency.async` — distinct target from Kotlin coroutines. */
+const CONCURRENCY_RX_TARGET: HarmonyTarget = {
+  module: 'Promise/AsyncIterator + @ohos.taskpool',
+  note:
+    'RxJava(Observable/Single/Flowable/Completable)→ Promise/async-await 或自建 emitter/AsyncIterator;' +
+    '订阅取消(Disposable/CompositeDisposable)、背压(Flowable)、调度器(Schedulers)与冷热流时序均无直接等价,' +
+    '需手动重建取消与背压逻辑',
+  constructs: [
+    { from: 'Observable/Flowable<T>', to: 'AsyncIterator 或回调流 + 手动背压' },
+    { from: 'Single/Maybe/Completable', to: 'Promise' },
+    { from: 'Disposable/CompositeDisposable', to: '手动取消标志(AbortController 式)' },
+    { from: 'Schedulers.io()/computation()', to: 'taskpool.execute / Worker' },
+  ],
+};
+
+/**
+ * The effective HarmonyOS target for `concurrency.async`, chosen from the ACTUAL
+ * imported async framework(s): `kotlinx.coroutines*` → the coroutine note,
+ * `io.reactivex*` → the RxJava note. When a module carries BOTH, the two are
+ * listed separately so neither flavor's semantics (coroutine structured
+ * concurrency vs Rx backpressure/cancellation) is silently dropped.
+ */
+export function concurrencyTargetFor(evidenceFqns: Iterable<string>): HarmonyTarget {
+  let rx = false;
+  let coroutines = false;
+  for (const fqn of evidenceFqns) {
+    if (fqn === 'io.reactivex' || fqn.startsWith('io.reactivex.')) rx = true;
+    else if (fqn === 'kotlinx.coroutines' || fqn.startsWith('kotlinx.coroutines.')) coroutines = true;
+  }
+  const coroutineTarget = SPEC_BY_ID.get('concurrency.async')!.harmony;
+  if (rx && !coroutines) return CONCURRENCY_RX_TARGET;
+  if (rx && coroutines) {
+    return {
+      module: `${coroutineTarget.module} ｜ ${CONCURRENCY_RX_TARGET.module}`,
+      note: `协程与 RxJava 并存,分别处理:\n[协程] ${coroutineTarget.note}\n[RxJava] ${CONCURRENCY_RX_TARGET.note}`,
+      constructs: [...(coroutineTarget.constructs ?? []), ...(CONCURRENCY_RX_TARGET.constructs ?? [])],
+    };
+  }
+  return coroutineTarget; // coroutines only, or evidence inconclusive
 }
 
 /**
@@ -451,6 +519,66 @@ const COMPONENT_TARGETS: Record<string, HarmonyTarget> = {
 /** The HarmonyOS translation target for a background-component subtype, or null. */
 export function harmonyComponentTargetFor(subtype: string | undefined): HarmonyTarget | null {
   return subtype ? COMPONENT_TARGETS[subtype] ?? null : null;
+}
+
+/**
+ * HarmonyOS targets for background components refined by their FRAMEWORK BASE
+ * CLASS (S2, P3.4). A component's real translation depends on which base it
+ * extends, not just its `<service>`/`<receiver>` manifest subtype: a VpnService
+ * and a plain Service both declare `<service>` but map to entirely different
+ * HarmonyOS constructs (or none). Keyed by the base's SIMPLE name (as recovered
+ * by `superTypes`/`javaSuperTypes`), covering the platform and AndroidX/Media3
+ * variants. Entries whose HarmonyOS feasibility is genuinely open are marked
+ * "待裁决" in the note rather than mapped to a wrong construct.
+ */
+const COMPONENT_SUPERCLASS_TARGETS: Record<string, HarmonyTarget> = {
+  VpnService: {
+    module: '@ohos.net.vpnExtension (VpnExtensionAbility)',
+    note: 'VpnService → VpnExtensionAbility + vpnExtension.setUp;权限 ohos.permission.MANAGE_VPN',
+  },
+  InCallService: {
+    module: '(平台可行性待裁决)',
+    note: 'InCallService 接管系统通话 UI(来电/去电界面)→ 鸿蒙第三方应用可能无接管系统通话 UI 的等价能力;平台可行性待裁决',
+  },
+  MediaBrowserService: {
+    module: '@ohos.multimedia.avsession (AVSession) + @ohos.multimedia.media (AVPlayer)',
+    note: 'MediaBrowserService/媒体后台 → AVSession 建会话 + AVPlayer 播放 + AVSessionController;媒体浏览树按需以自定义数据接口重建',
+  },
+  MediaBrowserServiceCompat: {
+    module: '@ohos.multimedia.avsession (AVSession) + @ohos.multimedia.media (AVPlayer)',
+    note: 'MediaBrowserServiceCompat/媒体后台 → AVSession 建会话 + AVPlayer 播放 + AVSessionController;媒体浏览树按需以自定义数据接口重建',
+  },
+  MediaSessionService: {
+    module: '@ohos.multimedia.avsession (AVSession) + @ohos.multimedia.media (AVPlayer)',
+    note: 'Media3 MediaSessionService → AVSession 建会话 + AVPlayer 播放;播放控制/通知交由 AVSession 系统媒体控件',
+  },
+  MediaLibraryService: {
+    module: '@ohos.multimedia.avsession (AVSession) + @ohos.multimedia.media (AVPlayer)',
+    note: 'Media3 MediaLibraryService → AVSession 建会话 + AVPlayer 播放;媒体库浏览树以自定义数据接口重建',
+  },
+  TileService: {
+    module: '(无直接等价,待裁决)',
+    note: 'TileService/快捷设置磁贴 → 鸿蒙控制中心无第三方磁贴的等价机制;平台可行性待裁决',
+  },
+};
+
+/**
+ * The HarmonyOS target for a background component, refined by its base class
+ * when known (`VpnService`, `InCallService`, media browser/session services,
+ * `TileService`), else falling back to the manifest-subtype mapping so a
+ * component whose superclass can't be resolved never regresses.
+ */
+export function harmonyComponentTargetForClass(
+  subtype: string | undefined,
+  superTypes: readonly string[] | undefined
+): HarmonyTarget | null {
+  if (superTypes) {
+    for (const base of superTypes) {
+      const hit = COMPONENT_SUPERCLASS_TARGETS[base];
+      if (hit) return hit;
+    }
+  }
+  return harmonyComponentTargetFor(subtype);
 }
 
 export interface CapabilityDetection {
@@ -499,12 +627,25 @@ export function detectCapabilities(
     caps.add(capId);
   }
 
-  // Capability nodes for every detected id.
+  // Capability nodes for every detected id. Evidence is unioned per capability so
+  // an evidence-sensitive target (concurrency.async: coroutines vs RxJava) can be
+  // picked from the async frameworks actually imported anywhere in the app.
   const detectedIds = new Set<string>();
-  for (const key of evidence.keys()) detectedIds.add(key.slice(key.indexOf('\0') + 1));
+  const evidenceByCap = new Map<string, Set<string>>();
+  for (const [key, ev] of evidence) {
+    const id = key.slice(key.indexOf('\0') + 1);
+    detectedIds.add(id);
+    const acc = evidenceByCap.get(id) ?? new Set<string>();
+    for (const fqn of ev) acc.add(fqn);
+    evidenceByCap.set(id, acc);
+  }
 
   const capabilityNodes: AppNode[] = [...detectedIds].sort().map((id) => {
     const spec = SPEC_BY_ID.get(id)!;
+    const target =
+      id === 'concurrency.async'
+        ? concurrencyTargetFor(evidenceByCap.get(id) ?? [])
+        : spec.harmony;
     const matchKey = `capability:${id}`;
     return {
       id: makeNodeId('android', 'Capability', matchKey),
@@ -517,9 +658,9 @@ export function detectCapabilities(
       fidelity: 'source-project',
       confidence: 0.9,
       attrs: {
-        harmonyModule: spec.harmony.module,
-        harmonyNote: spec.harmony.note,
-        constructs: spec.harmony.constructs ?? [],
+        harmonyModule: target.module,
+        harmonyNote: target.note,
+        constructs: target.constructs ?? [],
       },
     };
   });

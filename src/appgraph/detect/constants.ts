@@ -15,6 +15,7 @@
 import { CoverageWarning } from '../schema';
 import { Node } from '../../types';
 import { annotationPositionalArg, enumEntries, topLevelConstants } from './kotlin-source';
+import { javaStaticFinalConstants } from './java-source';
 import { DetectContext, isShippableJvmNode, ReadCode } from './shared';
 
 /** Migration-invariant literals recovered from one ArchModule (attached to attrs). */
@@ -23,8 +24,8 @@ export interface ConstantsFacts {
   literals: Array<{ name: string; value: string; kind: 'string' | 'number' | 'url'; file: string }>;
   /** Retrofit route declarations (`@GET`/`@POST`/…). */
   routes: Array<{ method: string; path: string; file: string }>;
-  /** Room `@Query` SQL statements. */
-  queries: Array<{ sql: string; file: string }>;
+  /** Room `@Query` SQL statements (`truncated: true` when clipped at MAX_SQL_LEN). */
+  queries: Array<{ sql: string; file: string; truncated?: boolean }>;
   /** `enum class` value sets. */
   enums: Array<{ name: string; values: string[]; file: string }>;
 }
@@ -37,6 +38,8 @@ export interface ConstantsResult {
 
 const METHOD_KINDS = new Set(['method', 'function']);
 const ENUM_KINDS = new Set(['class', 'enum']);
+/** Java node kinds a `static final` constant field surfaces as (extractor-dependent). */
+const CONSTANT_KINDS = new Set(['constant', 'field']);
 const HTTP_VERBS = ['DELETE', 'GET', 'PATCH', 'POST', 'PUT'];
 const SQL_PREFIX = /^\s*(select|insert|update|delete|with)\b/i;
 
@@ -67,9 +70,23 @@ export function detectConstants(nodes: Node[], readCode: ReadCode, ctx: DetectCo
     if (code === null) continue;
     const file = node.filePath;
 
-    if (code.includes('const val')) {
+    if (node.language === 'kotlin' && code.includes('const val')) {
       const f = factsFor(moduleId);
       for (const c of topLevelConstants(code)) {
+        const lit = classifyLiteral(c);
+        if (lit) f.literals.push({ ...lit, file });
+      }
+    } else if (
+      node.language === 'java' &&
+      CONSTANT_KINDS.has(node.kind) &&
+      code.includes('static final')
+    ) {
+      // Java has no `const val`: its migration-invariant literals are class-scope
+      // `static final` fields (AntennaPod's `PodDBAdapter.KEY_* = "column"`), each
+      // extracted as its own constant/field node. Same literals structure + noise
+      // rules + MAX_LITERALS cap as the Kotlin path (P3.2a).
+      const f = factsFor(moduleId);
+      for (const c of javaStaticFinalConstants(code)) {
         const lit = classifyLiteral(c);
         if (lit) f.literals.push({ ...lit, file });
       }
@@ -83,7 +100,16 @@ export function detectConstants(nodes: Node[], readCode: ReadCode, ctx: DetectCo
       if (code.includes('@Query')) {
         const sql = annotationPositionalArg(code, 'Query');
         if (sql !== null && SQL_PREFIX.test(sql)) {
-          factsFor(moduleId).queries.push({ sql: sql.trim().slice(0, MAX_SQL_LEN), file });
+          const trimmed = sql.trim();
+          const clipped = trimmed.length > MAX_SQL_LEN;
+          // `truncated` is additive/back-compat (present only when true): the plan
+          // layer reads it to down-grade the SQL-preservation L3 check to info,
+          // since a clipped statement can't be a byte-exact acceptance invariant.
+          factsFor(moduleId).queries.push({
+            sql: trimmed.slice(0, MAX_SQL_LEN),
+            file,
+            ...(clipped ? { truncated: true } : {}),
+          });
         }
       }
     }
@@ -160,11 +186,30 @@ function normalize(
   const queries = dedupBy(f.queries, (q) => q.sql).sort(
     (a, b) => a.sql.localeCompare(b.sql) || a.file.localeCompare(b.file)
   );
-  const enums = dedupBy(f.enums, (e) => e.name)
-    .map((e) => ({ ...e, values: [...e.values].sort() }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const enums = dedupEnums(f.enums);
 
   return { literals, routes, queries, enums };
+}
+
+/**
+ * Dedup enums by (sorted value set, file) — the SAME nested enum frequently
+ * surfaces under several outer type names (an outer `class`/`sealed` span whose
+ * body holds one `enum class` gets that enum's entries attributed under the outer
+ * name too, e.g. `Call` and `State` both listing the same 11 values). Keep one
+ * stable representative per (values, file): the lexicographically smallest name.
+ */
+function dedupEnums(
+  raw: Array<{ name: string; values: string[]; file: string }>
+): Array<{ name: string; values: string[]; file: string }> {
+  const byKey = new Map<string, { name: string; values: string[]; file: string }>();
+  for (const e of raw) {
+    const values = [...e.values].sort();
+    const key = `${e.file}\0${values.join('\0')}`;
+    const rep = { name: e.name, values, file: e.file };
+    const prev = byKey.get(key);
+    if (!prev || rep.name.localeCompare(prev.name) < 0) byKey.set(key, rep);
+  }
+  return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function dedupBy<T>(items: T[], key: (item: T) => string): T[] {

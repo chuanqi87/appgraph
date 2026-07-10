@@ -17,13 +17,16 @@ import { AppEdge, AppNode, CoverageWarning } from '../schema';
 import { Node } from '../../types';
 import { CodeSymbolGraph } from '../graph-reader';
 import { ModuleRef } from './manifest-capabilities';
-import { detectAndroidStructure } from './android-structure';
+import { detectAndroidStructure, SuperTypeResolver } from './android-structure';
+import { superTypes } from './kotlin-source';
+import { javaSuperTypes } from './java-source';
 import { detectNavigationXml } from './android-navigation-xml';
 import { detectNavFrameworks } from './nav-frameworks';
-import { detectComposeScreens } from './compose';
+import { detectComposeScreens, detectCircuitScreens } from './compose';
 import { detectConstants, ConstantsFacts } from './constants';
 import { detectDi, DiFacts } from './di';
 import { detectEntities } from './entities';
+import { detectSqlDelightModels, detectSqliteSchemaHints, SqliteSchemaHint } from './sqldelight';
 import { detectFlows, FlowFacts } from './flows';
 import { aggregateRolesByModule, detectRoles, RoleResult } from './roles';
 import { detectResources } from './resources';
@@ -48,6 +51,9 @@ export interface SemanticsResult {
     diModules: number;
     diWiredEdges: number;
     exposedStates: number;
+    /** U3b · SQLDelight `.sq` tables lifted to DataModels + handwritten-SQLite hint modules. */
+    sqldelightTables: number;
+    sqliteHintModules: number;
     resourceFiles: number;
     layoutScreens: number;
     /** S2 · manifest components + intent navigation + layout hosting. */
@@ -100,8 +106,14 @@ export function buildSemantics(
 
   // U2 compose screens + navigation.
   const compose = detectComposeScreens(nodes, readCode, ctx);
+  // U2b Slack Circuit screens (`: Screen` / `@CircuitInject`) — invisible to the
+  // Compose pass (they are `class`/`object` nav keys, not `@Composable` fns).
+  const circuit = detectCircuitScreens(nodes, readCode, ctx);
   // U3 entities + field schema.
   const entities = detectEntities(nodes, readCode, ctx);
+  // U3b SQLDelight `.sq` tables (filesystem-driven) + handwritten-SQLite hints.
+  const sqldelight = detectSqlDelightModels(root, moduleRefs(archModules));
+  const sqliteHints = detectSqliteSchemaHints(nodes, readCode, ctx);
   // U4 DI object graph.
   const di = detectDi(nodes, readCode, ctx);
   // U5 reactive flows.
@@ -117,7 +129,8 @@ export function buildSemantics(
   const structure = detectAndroidStructure(
     root,
     moduleRefs(archModules),
-    new Set(resources.layoutScreenNodes.map((n) => n.id))
+    new Set(resources.layoutScreenNodes.map((n) => n.id)),
+    buildComponentSuperTypeResolver(nodes, readCode)
   );
 
   // S3 · declared nav-graph XML navigation (Jetpack Navigation). Runs over the
@@ -135,6 +148,7 @@ export function buildSemantics(
   // derivation — replaces the compose + intent source scans.
   const navTargets: AppNode[] = [
     ...compose.screenNodes,
+    ...circuit.screenNodes,
     ...resources.layoutScreenNodes,
     ...structure.nodes.filter((n) => n.kind === 'Screen' || n.kind === 'BackgroundComponent'),
     ...navXml.screenNodes,
@@ -150,6 +164,7 @@ export function buildSemantics(
   const navWarnings = navCoverageWarnings(
     {
       screenCount,
+      navigableScreenCount: countNavigableScreens(navTargets),
       totalNavEdges,
       activityScreens: structure.stats.activityScreens,
       appEntries: structure.stats.appEntries,
@@ -164,13 +179,18 @@ export function buildSemantics(
       flows: flows.flowsByModule.get(m.id),
       constants: constants.constantsByModule.get(m.id),
       testContract: tests.testContractByModule.get(m.id),
+      sqlite: sqliteHints.hintsByModule.get(m.id),
     })
   );
 
   const outNodes: AppNode[] = [
     ...enrichedModules,
     ...compose.screenNodes,
+    ...circuit.screenNodes,
+    // entities BEFORE sqldelight so a same-named Room `@Entity` (richer schema)
+    // wins the last-write-wins merge over a SQLDelight table of the same name.
     ...entities.dataModelNodes,
+    ...sqldelight.dataModelNodes,
     ...resources.resourceNodes,
     ...resources.layoutScreenNodes,
     ...structure.nodes,
@@ -182,7 +202,9 @@ export function buildSemantics(
     ...navXml.edges,
     ...navLift.navEdges,
     ...compose.containsEdges,
+    ...circuit.containsEdges,
     ...entities.containsEdges,
+    ...sqldelight.containsEdges,
     ...di.diEdges,
     ...resources.containsEdges,
     ...structure.edges,
@@ -190,6 +212,7 @@ export function buildSemantics(
   const warnings: CoverageWarning[] = [
     ...compose.warnings,
     ...entities.warnings,
+    ...sqldelight.warnings,
     ...di.warnings,
     ...flows.warnings,
     ...constants.warnings,
@@ -208,12 +231,14 @@ export function buildSemantics(
     roles,
     stats: {
       rolesTagged: roles.byNodeId.size,
-      screens: compose.stats.screenCount,
+      screens: compose.stats.screenCount + circuit.stats.screenCount,
       navEdges: navLift.stats.navigatesTo,
-      dataModels: entities.dataModelNodes.length,
+      dataModels: entities.dataModelNodes.length + sqldelight.dataModelNodes.length,
       diModules: di.stats.moduleCount,
       diWiredEdges: di.stats.wiredEdges,
       exposedStates: flows.stats.exposedStates,
+      sqldelightTables: sqldelight.stats.tables,
+      sqliteHintModules: sqliteHints.stats.modulesWithHint,
       resourceFiles: resources.stats.valueFiles,
       layoutScreens: resources.stats.layoutFiles,
       activityScreens: structure.stats.activityScreens,
@@ -252,27 +277,39 @@ export function buildSemantics(
  * this catches the framework-unknown case.)
  */
 export function navCoverageWarnings(
-  counts: { screenCount: number; totalNavEdges: number; activityScreens: number; appEntries: number },
+  counts: {
+    screenCount: number;
+    /** Screens that are real navigation destinations (excludes `xml-layout` bare
+     *  layout files). Defaults to `screenCount` when omitted. */
+    navigableScreenCount?: number;
+    totalNavEdges: number;
+    activityScreens: number;
+    appEntries: number;
+  },
   getSynthCount: () => number
 ): CoverageWarning[] {
   const { screenCount, totalNavEdges, activityScreens, appEntries } = counts;
+  // The empty/sparse-nav guards count only NAVIGABLE screens — a bare
+  // `res/layout/*.xml` with no host is a layout artifact, not a destination, and
+  // must not inflate the "N 个 Screen 但没有导航" tally (koler: 35 → ~16).
+  const navigable = counts.navigableScreenCount ?? screenCount;
   const out: CoverageWarning[] = [];
 
-  if (screenCount >= 5 && totalNavEdges === 0) {
+  if (navigable >= 5 && totalNavEdges === 0) {
     const synthCount = getSynthCount();
     out.push({
       message:
         synthCount === 0
-          ? `识别出 ${screenCount} 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边——` +
+          ? `识别出 ${navigable} 个 Screen，但核心图中没有任何 compose-route/android-intent 合成边——` +
             `导航图为空，不可依赖。若 .codegraph 索引由旧版本构建，请用当前版本重跑 codegraph index；` +
             `若索引已是最新，则该应用的导航机制（如 Fragment 事务/自研路由）未被合成器覆盖`
-          : `识别出 ${screenCount} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
+          : `识别出 ${navigable} 个 Screen、核心图有 ${synthCount} 条导航合成边，但没有一条能归因到 Screen——` +
             `导航图为空，页面迁移关系不可依赖`,
     });
-  } else if (screenCount >= 20 && totalNavEdges < screenCount * 0.05) {
+  } else if (navigable >= 20 && totalNavEdges < navigable * 0.05) {
     out.push({
       message:
-        `识别出 ${screenCount} 个 Screen 但只有 ${totalNavEdges} 条 navigates_to——` +
+        `识别出 ${navigable} 个 Screen 但只有 ${totalNavEdges} 条 navigates_to——` +
         `导航覆盖异常稀疏（该应用的导航机制可能未被合成器覆盖，页面迁移关系不完整）`,
     });
   }
@@ -296,6 +333,17 @@ export function navCoverageWarnings(
   return out;
 }
 
+/**
+ * Count Screen nodes that are real navigation destinations — excludes the
+ * `xml-layout` Screen nodes, which stand in for bare `res/layout/*.xml` files
+ * (a layout artifact, not a navigable page). Used only for the anti-silence
+ * nav-coverage tally, so a layout-heavy View app (koler) isn't reported as
+ * "N 个 Screen" where a large fraction are just layout file names.
+ */
+export function countNavigableScreens(nodes: AppNode[]): number {
+  return nodes.filter((n) => n.kind === 'Screen' && n.subtype !== 'xml-layout').length;
+}
+
 /** The per-module semantic facts the orchestrator folds into an ArchModule's attrs. */
 interface ModuleSemantics {
   roleCounts?: Record<string, number>;
@@ -303,6 +351,7 @@ interface ModuleSemantics {
   flows?: FlowFacts;
   constants?: ConstantsFacts;
   testContract?: TestContractFacts;
+  sqlite?: SqliteSchemaHint;
 }
 
 /** Re-emit an ArchModule with semantic attrs merged in (preserves existing attrs). */
@@ -323,6 +372,7 @@ function enrichModule(module: AppNode, s: ModuleSemantics): AppNode {
     attrs.constants = s.constants;
   }
   if (s.testContract && s.testContract.classes.length > 0) attrs.testContract = s.testContract;
+  if (s.sqlite && (s.sqlite.tables.length > 0 || s.sqlite.columns.length > 0)) attrs.sqlite = s.sqlite;
   return { ...module, attrs };
 }
 
@@ -334,6 +384,43 @@ function moduleRefs(archModules: AppNode[]): ModuleRef[] {
     if (dir !== undefined) refs.push({ id: m.id, name: m.name, dir });
   }
   return refs;
+}
+
+/**
+ * Build a background-component supertype resolver over the code graph: given a
+ * manifest component's simple/FQ name, recover its declared base classes (Kotlin
+ * `: Base` / Java `extends`) so S2 can refine the HarmonyOS target by framework
+ * base class (VpnService / InCallService / media services / TileService). Reads
+ * at most one source span per resolved class (memoized) — only the handful of
+ * manifest components is ever looked up, so the whole-graph scan stays cheap.
+ */
+function buildComponentSuperTypeResolver(nodes: Node[], readCode: ReadCode): SuperTypeResolver {
+  const byName = new Map<string, Node[]>();
+  const push = (key: string, n: Node): void => {
+    const list = byName.get(key) ?? [];
+    list.push(n);
+    byName.set(key, list);
+  };
+  for (const n of nodes) {
+    if (n.kind !== 'class' || (n.language !== 'kotlin' && n.language !== 'java')) continue;
+    push(n.name, n);
+    if (n.qualifiedName && n.qualifiedName !== n.name) push(n.qualifiedName, n);
+  }
+  const cache = new Map<string, readonly string[] | undefined>();
+  return (simpleName, fqName) => {
+    const cacheKey = fqName ?? simpleName;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    const candidates = (fqName ? byName.get(fqName) : undefined) ?? byName.get(simpleName) ?? [];
+    // Deterministic pick when a simple name is ambiguous across modules.
+    const node = [...candidates].sort((a, b) => a.id.localeCompare(b.id))[0];
+    let supers: readonly string[] | undefined;
+    if (node) {
+      const code = readCode(node);
+      if (code !== null) supers = node.language === 'java' ? javaSuperTypes(code) : superTypes(code);
+    }
+    cache.set(cacheKey, supers);
+    return supers;
+  };
 }
 
 /** Wrap the reader in a per-node source cache so each span is read at most once. */

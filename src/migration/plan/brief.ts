@@ -14,7 +14,9 @@
  */
 
 import { ContractCheck, UnitContract } from './contract';
-import { BackgroundComponentBrief, CustomViewBrief, DataModelBrief, FeatureSectionBrief, ModuleBrief, ScreenBrief } from './context';
+import { BackgroundComponentBrief, ControlTree, CustomViewBrief, DataModelBrief, FeatureSectionBrief, ModuleBrief, ResourceBrief, ScreenBrief } from './context';
+import { ControlNode } from '../../appgraph/detect/resources';
+import { SqliteSchemaHint } from '../../appgraph/detect/sqldelight';
 import { isNestedType, typePathKey } from '../../appgraph/qualified-name';
 
 /** The unit shape the renderer needs (MigrationUnit and UnitPlan both satisfy it). */
@@ -41,6 +43,8 @@ export interface BriefUnit {
 const MAX_LISTED_FILES = 40;
 /** How many whole-module files to list verbatim (module/merged units) before eliding. */
 const MAX_LISTED_MODULE_FILES = 200;
+/** How many control-tree nodes to render per screen before eliding the rest (T2). */
+const MAX_RENDERED_CONTROLS = 60;
 
 /** `12345` → `12.3k`, keeping the rough estimate readable. */
 function formatTokens(n: number): string {
@@ -53,7 +57,14 @@ export function renderUnitBrief(
   modules: ModuleBrief[],
   totalUnits: number,
   contract?: UnitContract,
-  unitRefById?: Map<string, string>
+  unitRefById?: Map<string, string>,
+  /**
+   * Set on a split SIBLING slice (not the module's first slice): the 1-based
+   * unit number that fully lists this module's shared module-level facts. When
+   * present, those sections render as a one-line pointer instead of the full
+   * duplicated tables (T1-2).
+   */
+  moduleFactsRef?: string
 ): string {
   const lines: string[] = [];
   lines.push(`# 迁移工单 ${unit.order + 1}/${totalUnits} · ${unit.label}`);
@@ -96,10 +107,18 @@ export function renderUnitBrief(
     );
     lines.push('');
   }
+  // A split sibling (not the module's first slice) points its shared module-level
+  // facts at the first slice rather than re-listing them (T1-2).
+  const showModuleFacts = !(unit.kind === 'split' && moduleFactsRef !== undefined);
   if (unit.kind === 'split' && unit.files) {
-    const part = unit.featureSig === 'rest' ? '剩余部分(胶水/未聚类文件)' : '一个功能簇(M2 Feature 细分)';
+    const isRest = unit.featureSig === 'rest' || (unit.featureSig?.startsWith('rest:') ?? false);
+    const part = isRest ? '剩余部分(胶水/未聚类文件,按包目录切分)' : '一个功能簇(M2 Feature 细分)';
     lines.push(`ℹ 本单元是模块的${part},只迁移下列 ${unit.files.length} 个文件;`);
-    lines.push('  模块级事实(DI 装配/清单组件/能力)为全模块共享,列出仅供上下文。');
+    lines.push(
+      showModuleFacts
+        ? '  模块级事实(DI 装配/清单组件/能力)为全模块共享,列出仅供上下文。'
+        : `  模块级事实(DI 装配/数据流/语义常量/资源/后台组件/权限/入口深链/行为契约)见本模块首片(单元 ${moduleFactsRef}),此处不重复。`
+    );
     for (const f of unit.files.slice(0, MAX_LISTED_FILES)) lines.push(`  - ${f}`);
     if (unit.files.length > MAX_LISTED_FILES) {
       lines.push(`  - …等共 ${unit.files.length} 个文件(全清单见 plan.json)`);
@@ -109,7 +128,7 @@ export function renderUnitBrief(
 
   // A split unit already lists its exact slice files in the header above; a
   // module/merged unit migrates the whole module, so it gets the full manifest.
-  for (const m of modules) renderModule(lines, m, unit.kind !== 'split');
+  for (const m of modules) renderModule(lines, m, unit.kind !== 'split', showModuleFacts);
   renderMcpGuide(lines, unit, modules);
   renderAcceptance(lines, modules, unit, contract);
 
@@ -138,7 +157,7 @@ function renderMcpGuide(lines: string[], unit: BriefUnit, modules: ModuleBrief[]
   lines.push('');
 }
 
-function renderModule(lines: string[], m: ModuleBrief, showFiles: boolean): void {
+function renderModule(lines: string[], m: ModuleBrief, showFiles: boolean, showModuleFacts = true): void {
   lines.push(`## 模块 ${m.moduleName}`);
   const meta = [
     m.role ? `角色 ${m.role}` : '',
@@ -155,19 +174,25 @@ function renderModule(lines: string[], m: ModuleBrief, showFiles: boolean): void
   }
   lines.push('');
 
+  // Section order is unchanged; `showModuleFacts=false` (a split sibling slice)
+  // just suppresses the un-sliceable module-level facts (DI / flows / constants /
+  // background / entries+deep-links / permissions / test contract) — they are
+  // rendered in full on the module's first slice, which the header points at (T1-2).
   if (showFiles) renderModuleFiles(lines, m);
   renderFeatureSections(lines, m.featureSections);
   renderScreens(lines, m.screens);
   renderCustomViews(lines, m.customViews);
-  renderBackgroundComponents(lines, m.backgroundComponents);
-  renderEntrypoints(lines, m);
+  if (showModuleFacts) renderResources(lines, m.resources);
+  if (showModuleFacts) renderBackgroundComponents(lines, m.backgroundComponents);
+  if (showModuleFacts) renderEntrypoints(lines, m);
   renderDataModels(lines, m.dataModels);
-  renderDi(lines, m);
-  renderFlows(lines, m);
-  renderConstants(lines, m);
-  renderCapabilities(lines, m);
+  if (showModuleFacts) renderSqliteSchema(lines, m.sqliteSchema);
+  if (showModuleFacts) renderDi(lines, m);
+  if (showModuleFacts) renderFlows(lines, m);
+  if (showModuleFacts) renderConstants(lines, m);
+  renderCapabilities(lines, m, showModuleFacts);
   renderInterface(lines, m);
-  renderTestContract(lines, m);
+  if (showModuleFacts) renderTestContract(lines, m);
   renderDependencies(lines, m);
 }
 
@@ -215,7 +240,87 @@ function renderScreens(lines: string[], screens: ScreenBrief[]): void {
     if (s.layouts.length > 0) {
       lines.push(`  - 关联布局 [静态]:${s.layouts.join(', ')}`);
     }
+    renderControlTrees(lines, s.controls);
   }
+  lines.push('');
+}
+
+/**
+ * Render a screen's layout control tree(s) as an indented outline (T2). ArkUI
+ * has no View inheritance, so the agent rebuilds each layout structurally as
+ * `@Component`/`@Builder` — the tree gives it tag + id + key attributes to work
+ * from. Bounded: at most `MAX_RENDERED_CONTROLS` nodes across the screen's
+ * layouts, then a「…等 N 个控件」elision.
+ */
+function renderControlTrees(lines: string[], trees: ControlTree[] | undefined): void {
+  if (!trees || trees.length === 0) return;
+  const total = trees.reduce((sum, t) => sum + t.controlCount, 0);
+  lines.push('  - 控件树 [静态](ArkUI 无 View 继承,按此结构用 @Component/@Builder 重写):');
+  const budget = { remaining: MAX_RENDERED_CONTROLS };
+  for (const tree of trees) {
+    lines.push(`    - @layout/${tree.layout}(${tree.controlCount} 控件${tree.truncated ? ',源树已截断' : ''})`);
+    renderControlNode(lines, tree.root, 3, budget);
+    if (budget.remaining <= 0) break;
+  }
+  const rendered = MAX_RENDERED_CONTROLS - budget.remaining;
+  if (total > rendered) {
+    lines.push(`    - …等共 ${total} 个控件(完整控件树见 plan.json)`);
+  }
+}
+
+/** One control node + its children, depth-indented, respecting the render budget. */
+function renderControlNode(
+  lines: string[],
+  node: ControlNode,
+  depth: number,
+  budget: { remaining: number }
+): void {
+  if (budget.remaining <= 0) return;
+  budget.remaining--;
+  const indent = '  '.repeat(depth);
+  const id = node.id ? ` #${node.id}` : '';
+  const include = node.include ? ` → @layout/${node.include}` : '';
+  const attrs = node.attrs
+    ? ' (' +
+      Object.entries(node.attrs)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ') +
+      ')'
+    : '';
+  const trunc = node.truncated ? ' …(子树略)' : '';
+  lines.push(`${indent}- ${node.tag}${id}${attrs}${include}${trunc}`);
+  for (const child of node.children ?? []) {
+    if (budget.remaining <= 0) break;
+    renderControlNode(lines, child, depth + 1, budget);
+  }
+}
+
+/**
+ * The module's XML resource inventory (T2) — the source-of-truth for the
+ * target's `resources/base/element/*.json`. A module-level fact: suppressed on a
+ * split sibling slice (see `showModuleFacts`).
+ */
+function renderResources(lines: string[], resources: ResourceBrief | undefined): void {
+  if (!resources) return;
+  const types = Object.entries(resources.byType)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([t, n]) => `${t}×${n}`);
+  if (types.length === 0 && resources.total === 0) return;
+  lines.push('### 资源 [静态](目标侧对应 resources/base/element/*.json 与 media/)');
+  lines.push(
+    `- 共 ${resources.total} 条(来自 ${resources.fileCount} 个 values 文件)` +
+      (types.length > 0 ? `:${types.join(' · ')}` : '')
+  );
+  if (resources.stringKeys.length > 0) {
+    // The key list is a bounded SAMPLE (per-file + module caps), so an overflow
+    // is a lower bound — never presented as a grand total (which would clash with
+    // the per-locale `string×N` count above; distinct base keys are far fewer).
+    const overflow =
+      resources.stringKeyOverflow > 0 ? ` …另有 ${resources.stringKeyOverflow}+ 个键(样本已截断)` : '';
+    lines.push(`- string 键样例:${resources.stringKeys.join(', ')}${overflow}(→ element/string.json)`);
+  }
+  lines.push('  string → element/string.json;color/dimen/style → element/color.json、float.json 等;图片资源(drawable/mipmap)→ media/。');
   lines.push('');
 }
 
@@ -260,12 +365,16 @@ function renderEntrypoints(lines: string[], m: ModuleBrief): void {
   lines.push('');
 }
 
+/** Table-backed data-model subtypes → a relationalStore table on the target. */
+const RDB_TABLE_SUBTYPES = new Set(['entity', 'sqldelight-table', 'sqlite-table']);
+
 function renderDataModels(lines: string[], models: DataModelBrief[]): void {
   if (models.length === 0) return;
   lines.push('### 数据模型 [静态](目标侧对应 relationalStore 表 / ArkTS interface)');
   for (const m of models) {
-    const target =
-      m.subtype === 'entity' ? `RDB 表${m.tableName ? ` \`${m.tableName}\`` : ''}` : 'ArkTS interface';
+    const target = RDB_TABLE_SUBTYPES.has(m.subtype)
+      ? `RDB 表${m.tableName ? ` \`${m.tableName}\`` : ''}`
+      : 'ArkTS interface';
     lines.push(`#### ${m.name} → ${target}${m.file ? ` — ${m.file}` : ''}`);
     for (const f of m.fields) {
       const flags = [
@@ -281,17 +390,60 @@ function renderDataModels(lines: string[], models: DataModelBrief[]): void {
   lines.push('');
 }
 
+/** How many resolved column keys to list before eliding (bounded brief). */
+const MAX_SQLITE_COLUMNS = 60;
+
+/**
+ * Handwritten-SQLite persistence hint (U3b). The `CREATE TABLE` schema is
+ * assembled from `KEY_*`/`TABLE_NAME_*` constants that can't be statically
+ * evaluated into a typed model, so this is a POINTER (table names + resolvable
+ * column keys), explicitly heuristic — never a V2 entity acceptance check.
+ */
+function renderSqliteSchema(lines: string[], hint: SqliteSchemaHint | undefined): void {
+  if (!hint || (hint.tables.length === 0 && hint.columns.length === 0)) return;
+  lines.push('### 手写 SQLite 表 [启发](SQLiteOpenHelper;目标侧对应 relationalStore 表,schema 需按源码人工核对)');
+  if (hint.files.length > 0) {
+    lines.push(`- 建表位置:${hint.files.join(', ')}`);
+  }
+  if (hint.tables.length > 0) {
+    lines.push(`- 表(${hint.tables.length}):${hint.tables.join(', ')}`);
+  }
+  if (hint.columns.length > 0) {
+    const shown = hint.columns.slice(0, MAX_SQLITE_COLUMNS);
+    const overflow =
+      hint.columnsTruncated || hint.columns.length > MAX_SQLITE_COLUMNS
+        ? ` …另有 ${Math.max(hint.columns.length - shown.length, 0)}+ 个列键(样本已截断)`
+        : '';
+    lines.push(`- 列键(从 KEY_* 常量解析,未按表拆分):${shown.join(', ')}${overflow}`);
+  }
+  lines.push('  说明:建表语句由常量拼接而成,无法静态求值出完整字段类型;迁移时请以源码 CREATE TABLE 为准。');
+  lines.push('');
+}
+
+/** `manual` → 手工装配; a named framework passes through; absent → generic DI 框架. */
+function diFrameworkLabel(framework: string | undefined): string {
+  if (!framework) return 'DI 框架';
+  return framework === 'manual' ? '手工装配' : framework;
+}
+
 function renderDi(lines: string[], m: ModuleBrief): void {
   const di = m.di;
   if (!di) return;
   const hasContent = di.modules.length || di.provides.length || di.binds.length || di.injectionPoints.length;
   if (!hasContent) return;
-  lines.push('### DI 装配 [静态](源侧 Hilt;HarmonyOS 无 DI 框架,需手动装配)');
+  // Framework is fingerprinted from the source imports (P3.2a) — no longer
+  // hard-coded to Hilt, so Koin/Metro/manual projects read correctly.
+  const fw = diFrameworkLabel(di.framework);
+  lines.push(`### DI 装配 [静态](源侧 ${fw};HarmonyOS 无 DI 框架,需手动装配)`);
   if (di.modules.length) {
-    lines.push(`- Hilt 模块:${di.modules.join(', ')}${di.scopes.length ? ` · 作用域 ${di.scopes.join(', ')}` : ''}`);
+    lines.push(`- ${fw} 模块:${di.modules.join(', ')}${di.scopes.length ? ` · 作用域 ${di.scopes.join(', ')}` : ''}`);
   }
   if (di.provides.length) lines.push(`- @Provides 提供类型:${di.provides.join(', ')}`);
-  for (const b of di.binds) lines.push(`- @Binds 绑定:\`${b.iface}\` ← \`${b.impl}\``);
+  for (const b of di.binds) {
+    const via = b.via ?? '@Binds';
+    const tag = b.multibinding ? ' [multibinding]' : '';
+    lines.push(`- ${via} 绑定${tag}:\`${b.iface}\` ← \`${b.impl}\``);
+  }
   for (const p of di.injectionPoints) {
     lines.push(`- 注入点 \`${p.name}\`${p.injects.length ? ` 依赖:${p.injects.join(', ')}` : '(无构造依赖)'}`);
   }
@@ -301,7 +453,7 @@ function renderDi(lines: string[], m: ModuleBrief): void {
 function renderFlows(lines: string[], m: ModuleBrief): void {
   const flows = m.flows;
   if (!flows || (flows.exposedStates.length === 0 && flows.collectPoints === 0)) return;
-  lines.push('### 响应式数据流 [静态](StateFlow/Flow/LiveData)');
+  lines.push('### 响应式数据流 [静态](StateFlow/Flow/LiveData/RxJava)');
   for (const s of flows.exposedStates) {
     lines.push(`- 暴露 \`${s.name}: ${s.flowKind}<${s.type}>\``);
   }
@@ -326,7 +478,9 @@ function renderConstants(lines: string[], m: ModuleBrief): void {
     lines.push(`- 路由 \`${r.method} ${r.path}\`(Retrofit → 目标 HTTP 请求须同路径)`);
   }
   for (const q of c.queries) {
-    lines.push(`- SQL \`${q.sql}\`(Room @Query → 目标 relationalStore 须等价语义)`);
+    // A clipped @Query can't be auto-verified byte-for-byte — flag manual review (T1-5c).
+    const note = q.truncated ? ' ⚠SQL 截断,人工核对' : '';
+    lines.push(`- SQL \`${q.sql}\`${note}(Room @Query → 目标 relationalStore 须等价语义)`);
   }
   for (const e of c.enums) {
     lines.push(`- 枚举 \`${e.name}\` 取值:${e.values.map((v) => `\`${v}\``).join(', ')}(取值集须完整保留)`);
@@ -334,10 +488,13 @@ function renderConstants(lines: string[], m: ModuleBrief): void {
   lines.push('');
 }
 
-function renderCapabilities(lines: string[], m: ModuleBrief): void {
-  if (m.permissionCapabilities.length === 0 && m.capabilities.length === 0) return;
+function renderCapabilities(lines: string[], m: ModuleBrief, showModuleFacts = true): void {
+  // The import-derived API capabilities are per-slice; the permission-capability
+  // line is module-level (manifest) and is suppressed on a split sibling (T1-2).
+  const showPerms = showModuleFacts && m.permissionCapabilities.length > 0;
+  if (!showPerms && m.capabilities.length === 0) return;
   lines.push('### 能力使用 → HarmonyOS 目标 API');
-  if (m.permissionCapabilities.length > 0) {
+  if (showPerms) {
     lines.push(
       `- 权限能力 [清单]:${m.permissionCapabilities.join(', ')}(目标 module.json5 需声明对应 ohos.permission)`
     );
@@ -417,8 +574,13 @@ function renderTestContract(lines: string[], m: ModuleBrief): void {
 }
 
 function renderDependencies(lines: string[], m: ModuleBrief): void {
+  // An implicit coupling with no weight AND no per-kind evidence is pure noise
+  // — it renders「权重 0()」with empty parens and tells the agent nothing (T1-9b).
+  const implied = m.impliedDependencies.filter(
+    (d) => !(d.weight === 0 && Object.keys(d.byKind).length === 0)
+  );
   lines.push('### 依赖');
-  if (m.dependencies.length === 0 && m.impliedDependencies.length === 0 && m.testDependencies.length === 0) {
+  if (m.dependencies.length === 0 && implied.length === 0 && m.testDependencies.length === 0) {
     lines.push('_(无内部依赖,是叶子模块)_');
   }
   for (const d of m.dependencies) {
@@ -430,7 +592,7 @@ function renderDependencies(lines: string[], m: ModuleBrief): void {
         `(testImplementation 等测试配置;不阻塞本单元迁移,移植测试时才需要)`
     );
   }
-  for (const d of m.impliedDependencies) {
+  for (const d of implied) {
     const kinds = Object.entries(d.byKind)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([k, n]) => `${k}×${n}`)
@@ -467,7 +629,10 @@ function renderAcceptance(
     lines.push(`### ${moduleName}`);
     const iface = checks.filter((c) => c.kind === 'interface');
     if (iface.length > 0) {
-      lines.push(`- [L1·auto] 公共接口:${iface.length} 个公开成员须有同名导出(逐条见契约文件)`);
+      lines.push(
+        `- [L1·auto] 公共接口:${iface.length} 个公开成员须有同名导出` +
+          `(${memberKindBreakdown(iface)};逐条见契约文件)`
+      );
     }
     for (const c of checks.filter((c) => c.kind !== 'interface')) {
       lines.push(`- [${c.tier}·${c.verify}] ${kindLabel(c.kind)} ${c.subject} — ${c.expect} \`${c.id.slice(0, 8)}\``);
@@ -479,6 +644,53 @@ function renderAcceptance(
   );
   lines.push('全量核对用不带 `--unit` 的 `migrate verify`。');
   lines.push('');
+}
+
+/** Fixed render order for the interface member-kind breakdown (deterministic). */
+const MEMBER_KIND_ORDER: ReadonlyArray<ContractCheck['memberKind']> = [
+  'interface',
+  'class',
+  'enum',
+  'function',
+];
+
+/** 中文 label for a real public-member kind (T1-4 memberKind display). */
+function memberKindLabel(kind: ContractCheck['memberKind']): string {
+  switch (kind) {
+    case 'class':
+      return '类';
+    case 'enum':
+      return '枚举';
+    case 'function':
+      return '函数';
+    case 'interface':
+      return '接口';
+    default:
+      return '接口'; // pre-memberKind plan.json — the old aggregate label
+  }
+}
+
+/**
+ * Per-real-kind breakdown of the interface checks, e.g. `类×2 · 枚举×1`. The
+ * check kind is uniformly 'interface' (stable id), so this reads `memberKind` —
+ * a class member shows as「类」rather than being lumped under「接口」(T1-4).
+ */
+function memberKindBreakdown(iface: ContractCheck[]): string {
+  const counts = new Map<ContractCheck['memberKind'], number>();
+  for (const c of iface) {
+    const k = c.memberKind ?? 'interface';
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const parts: string[] = [];
+  for (const k of MEMBER_KIND_ORDER) {
+    const n = counts.get(k);
+    if (n) parts.push(`${memberKindLabel(k)}×${n}`);
+  }
+  // Any unexpected kind (should not occur — INTERFACE_KINDS is closed) sorts last.
+  for (const [k, n] of [...counts.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])))) {
+    if (!MEMBER_KIND_ORDER.includes(k)) parts.push(`${memberKindLabel(k)}×${n}`);
+  }
+  return parts.join(' · ');
 }
 
 /** Human-readable label for a contract check kind. */

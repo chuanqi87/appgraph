@@ -20,7 +20,7 @@ interface Fixture {
 
 let seq = 0;
 function buildFixture(
-  specs: Array<{ kind: NodeKind; name: string; module: string; code: string }>
+  specs: Array<{ kind: NodeKind; name: string; module: string; code: string; file?: string }>
 ): Fixture {
   const store = new Map<string, string>();
   const moduleOf = new Map<string, string>();
@@ -28,12 +28,15 @@ function buildFixture(
     const id = `n${seq++}`;
     store.set(id, s.code);
     moduleOf.set(id, `mod:${s.module}`);
+    // `file` lets a test place several nodes in the SAME file (needed to exercise
+    // the (values, file) enum dedup); otherwise it is derived from the name.
+    const filePath = s.file ?? `${s.module}/src/main/kotlin/${s.name}.kt`;
     return {
       id,
       kind: s.kind,
       name: s.name,
-      qualifiedName: `${s.module}/${s.name}.kt::${s.name}`,
-      filePath: `${s.module}/src/main/kotlin/${s.name}.kt`,
+      qualifiedName: `${filePath}::${s.name}`,
+      filePath,
       language: 'kotlin',
       startLine: 1,
       endLine: 1 + s.code.split('\n').length,
@@ -185,5 +188,50 @@ describe('detectConstants · dedup + determinism', () => {
     const b = buildFixture(specs);
     const r2 = JSON.stringify([...detectConstants(b.nodes, b.readCode, b.ctx).constantsByModule]);
     expect(r1).toBe(r2);
+  });
+});
+
+describe('T1-5b · SQL truncation marker', () => {
+  it('flags a query clipped at MAX_SQL_LEN with truncated:true (else the field is absent)', () => {
+    const longSql = 'SELECT ' + 'x'.repeat(600) + ' FROM t';
+    const f = buildFixture([
+      { kind: 'method', name: 'big', module: 'm', code: `@Query("${longSql}")\nfun big(): List<Row>` },
+      { kind: 'method', name: 'small', module: 'm', code: '@Query("SELECT * FROM t WHERE id = 1")\nfun small(): Row' },
+    ]);
+    const queries = detectConstants(f.nodes, f.readCode, f.ctx).constantsByModule.get('mod:m')!.queries;
+    const big = queries.find((q) => q.file.endsWith('big.kt'))!;
+    const small = queries.find((q) => q.file.endsWith('small.kt'))!;
+    // Clipped to exactly MAX_SQL_LEN (500) and tagged.
+    expect(big.sql.length).toBe(500);
+    expect(big.truncated).toBe(true);
+    // Back-compat: an un-clipped query carries no `truncated` field at all.
+    expect(small.truncated).toBeUndefined();
+    expect('truncated' in small).toBe(false);
+  });
+});
+
+describe('T1-9 · enum dedup by (values, file)', () => {
+  it('collapses the same nested enum surfaced under several outer names', () => {
+    // `Call` (outer) and `State` (nested enum) share a file and the same value set —
+    // one stable representative survives, named by the smallest name.
+    const body = 'enum class State { IDLE, RINGING, ACTIVE, HELD, DIALING }';
+    const f = buildFixture([
+      { kind: 'class', name: 'Call', module: 'm', file: 'm/src/main/kotlin/Call.kt', code: `sealed class Call {\n  ${body}\n}` },
+      { kind: 'enum', name: 'State', module: 'm', file: 'm/src/main/kotlin/Call.kt', code: body },
+    ]);
+    const enums = detectConstants(f.nodes, f.readCode, f.ctx).constantsByModule.get('mod:m')!.enums;
+    expect(enums).toHaveLength(1);
+    expect(enums[0]!.name).toBe('Call'); // 'Call' < 'State'
+    expect(enums[0]!.values).toEqual(['ACTIVE', 'DIALING', 'HELD', 'IDLE', 'RINGING']);
+  });
+
+  it('keeps same-valued enums that live in different files', () => {
+    const body = 'enum class Dir { UP, DOWN }';
+    const f = buildFixture([
+      { kind: 'enum', name: 'Dir', module: 'm', file: 'm/src/main/kotlin/a/Dir.kt', code: body },
+      { kind: 'enum', name: 'Dir', module: 'm', file: 'm/src/main/kotlin/b/Dir.kt', code: body },
+    ]);
+    const enums = detectConstants(f.nodes, f.readCode, f.ctx).constantsByModule.get('mod:m')!.enums;
+    expect(enums).toHaveLength(2); // distinct files → both kept
   });
 });

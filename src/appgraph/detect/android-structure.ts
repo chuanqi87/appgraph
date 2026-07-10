@@ -43,7 +43,7 @@ import {
 } from '../schema';
 import { extractManifest } from '../extractors/android/manifest';
 import { liftNavigation } from '../lift/android-navigation';
-import { harmonyComponentTargetFor, harmonyTargetFor } from './api-capabilities';
+import { harmonyComponentTargetForClass, harmonyTargetFor } from './api-capabilities';
 import {
   ModuleRef,
   attributeModule,
@@ -109,15 +109,26 @@ export interface AndroidStructureResult {
   };
 }
 
+/** Resolve a component class's declared supertypes (Kotlin `: Base` / Java
+ *  `extends`), keyed by its simple name and optional fully-qualified name. */
+export type SuperTypeResolver = (
+  simpleName: string,
+  fqName?: string
+) => readonly string[] | undefined;
+
 /**
  * Extract the Android structural layer. `knownLayoutScreenIds` are the
  * `xml-layout` Screen node ids U6 produced in the same semantics run — layout
- * hosting edges are emitted only against those.
+ * hosting edges are emitted only against those. `resolveSuperTypes` (optional)
+ * refines a background component's HarmonyOS target by its framework base class
+ * (VpnService / InCallService / media services / TileService); when absent or a
+ * class can't be resolved, the manifest-subtype mapping is used unchanged.
  */
 export function detectAndroidStructure(
   projectRoot: string,
   modules: ModuleRef[],
-  knownLayoutScreenIds: ReadonlySet<string>
+  knownLayoutScreenIds: ReadonlySet<string>,
+  resolveSuperTypes?: SuperTypeResolver
 ): AndroidStructureResult {
   const dirToModule = moduleDirIndex(modules);
   const moduleByDir = new Map(modules.map((m) => [m.dir, m]));
@@ -161,7 +172,7 @@ export function detectAndroidStructure(
     );
     for (const node of extraction.nodes) {
       if (!KEPT_NODE_KINDS.has(node.kind)) continue;
-      addNode(node.kind === 'BackgroundComponent' ? enrichComponent(node) : node);
+      addNode(node.kind === 'BackgroundComponent' ? enrichComponent(node, resolveSuperTypes) : node);
       if (owner && node.kind !== 'Resource') {
         addEdge({
           id: makeEdgeId('app_contains', owner.id, node.id),
@@ -299,9 +310,15 @@ export function detectAndroidStructure(
   };
 }
 
-/** Attach the HarmonyOS translation target to a background component. */
-function enrichComponent(node: AppNode): AppNode {
-  const target = harmonyComponentTargetFor(node.subtype);
+/**
+ * Attach the HarmonyOS translation target to a background component, refined by
+ * its framework base class when the resolver can recover it (VpnService,
+ * InCallService, media services, TileService), else by manifest subtype.
+ */
+function enrichComponent(node: AppNode, resolveSuperTypes?: SuperTypeResolver): AppNode {
+  const fqName = typeof node.platformRef?.symbol === 'string' ? node.platformRef.symbol : undefined;
+  const supers = resolveSuperTypes?.(node.name, fqName);
+  const target = harmonyComponentTargetForClass(node.subtype, supers);
   if (!target) return node;
   return {
     ...node,

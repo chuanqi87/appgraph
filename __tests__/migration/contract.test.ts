@@ -148,3 +148,113 @@ describe('brief acceptance section is contract-driven', () => {
     expect(md).toContain('## 验收清单');
   });
 });
+
+// ---------------------------------------------------------------------------
+// T1-4 · interface checks carry the REAL member kind (display only). `kind`
+// stays 'interface' (part of the stable id); `memberKind` labels a class member
+// 类 rather than lumping it under 接口. The id must not move.
+// ---------------------------------------------------------------------------
+
+const X_ID = makeNodeId('android', 'ArchModule', 'module:corex');
+
+function moduleGraph(matchKey: string, dir: string, attrs: Record<string, unknown> = {}): MigrationGraph {
+  const graph = emptyMigrationGraph({ platform: 'android', app: { name: 'toy', packageName: 'com.toy' } });
+  const mod: AppNode = {
+    id: makeNodeId('android', 'ArchModule', matchKey),
+    kind: 'ArchModule', matchKey, name: `:${dir.replace(/\//g, ':')}`,
+    platform: 'android', provenance: 'lifted', fidelity: 'source-project', confidence: 1,
+    attrs: { dir, ...attrs },
+  };
+  mergeInto(graph, { nodes: [mod], edges: [] });
+  return graph;
+}
+
+function readerOf(nodes: Node[]): CodeSymbolGraph {
+  return { getAllNodes: () => nodes, getCode: () => null } as unknown as CodeSymbolGraph;
+}
+
+describe('T1-4 · contract memberKind display + id stability', () => {
+  it('class/enum/function members keep kind=interface but carry the real memberKind', () => {
+    const input = buildAssemblyInput(
+      moduleGraph('module:corex', 'core/x'),
+      readerOf([
+        codeNode('c', 'class', 'Foo', 'core/x/src/main/kotlin/Foo.kt'),
+        codeNode('e', 'enum', 'Color', 'core/x/src/main/kotlin/Color.kt'),
+        codeNode('f', 'function', 'doThing', 'core/x/src/main/kotlin/Fn.kt'),
+      ])
+    );
+    const contract = buildUnitContracts(
+      [{ id: 'u', order: 0, label: ':core:x', moduleIds: [X_ID] }],
+      input
+    ).get('u')!;
+
+    const foo = contract.checks.find((c) => c.kind === 'interface' && c.subject.endsWith('::Foo'))!;
+    expect(foo.kind).toBe('interface'); // fixed — part of the id
+    expect(foo.memberKind).toBe('class'); // real kind for display
+    // The id is NOT affected by memberKind — still the pure (kind,module,subject) hash.
+    expect(foo.id).toBe(checkId('interface', X_ID, foo.subject));
+
+    const enumCheck = contract.checks.find((c) => c.subject.endsWith('::Color'))!;
+    expect(enumCheck.memberKind).toBe('enum');
+    const fnCheck = contract.checks.find((c) => c.subject.endsWith('::doThing'))!;
+    expect(fnCheck.memberKind).toBe('function');
+  });
+
+  it('brief labels a class member 类 (not 接口) via the memberKind breakdown', () => {
+    const input = buildAssemblyInput(
+      moduleGraph('module:corex', 'core/x'),
+      readerOf([
+        codeNode('c', 'class', 'Foo', 'core/x/src/main/kotlin/Foo.kt'),
+        codeNode('e', 'enum', 'Color', 'core/x/src/main/kotlin/Color.kt'),
+        codeNode('f', 'function', 'doThing', 'core/x/src/main/kotlin/Fn.kt'),
+      ])
+    );
+    const contract = buildUnitContracts(
+      [{ id: 'u', order: 0, label: ':core:x', moduleIds: [X_ID] }],
+      input
+    ).get('u')!;
+    const unit: MigrationUnit = { id: 'u', moduleIds: [X_ID], label: ':core:x', order: 0, cyclic: false };
+    const md = renderUnitBrief(unit, [], 1, contract);
+    expect(md).toContain('公共接口:3 个公开成员须有同名导出(类×1 · 枚举×1 · 函数×1;逐条见契约文件)');
+    // A class member must not be rendered as「接口」in the aggregate.
+    expect(md).not.toContain('接口×1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1-5c · a truncated @Query can't be a byte-exact invariant — its L3 check is
+// down-graded to a non-auto `info` check + flagged for manual review.
+// ---------------------------------------------------------------------------
+
+const DB_ID = makeNodeId('android', 'ArchModule', 'module:coredb');
+
+describe('T1-5c · truncated SQL L3 check downgrade', () => {
+  it('marks a truncated @Query check verify=info, drops auto-scan, flags manual review', () => {
+    const graph = moduleGraph('module:coredb', 'core/db', {
+      constants: {
+        literals: [],
+        routes: [],
+        queries: [
+          { sql: 'SELECT ' + 'x, '.repeat(300) + 'y FROM big', file: 'core/db/Q.kt', truncated: true },
+          { sql: 'SELECT * FROM t', file: 'core/db/Q.kt' },
+        ],
+        enums: [],
+      },
+    });
+    const input = buildAssemblyInput(graph, readerOf([]));
+    const contract = buildUnitContracts(
+      [{ id: 'u', order: 0, label: ':core:db', moduleIds: [DB_ID] }],
+      input
+    ).get('u')!;
+
+    const queries = contract.checks.filter((c) => c.kind === 'query');
+    expect(queries).toHaveLength(2);
+    const truncated = queries.find((c) => c.params?.truncated === true)!;
+    expect(truncated.verify).toBe('info');
+    expect(truncated.depth).toBeUndefined(); // no contains-scan over a clipped statement
+    expect(truncated.expect).toContain('截断');
+    const normal = queries.find((c) => c.params?.truncated !== true)!;
+    expect(normal.verify).toBe('auto');
+    expect(normal.depth).toBe('contains-scan');
+  });
+});

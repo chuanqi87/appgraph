@@ -755,6 +755,42 @@ function printSyncDiff(diff: MigrationDiff, reportPath: string): void {
   }
 }
 
+interface LabelCliOptions {
+  target?: string;
+  key?: string;
+  name?: string;
+  summary?: string;
+  summaryFile?: string;
+}
+
+/**
+ * `migrate label` — CLI passthrough to the `migrate_label` MCP tool (same
+ * handler, same validateLabel gate). Lets an analysis agent write back
+ * semantic annotations over plain Bash, with no dependency on a live MCP
+ * connection. `--summary-file` exists because shell-quoting a multi-line
+ * string is failure-prone; a file round-trip isn't.
+ */
+function cmdLabel(pathArg: string, options: LabelCliOptions): void {
+  if (options.target !== 'feature' && options.target !== 'unit') {
+    throw new Error('--target 需为 "feature" 或 "unit"');
+  }
+  if (!options.key) {
+    throw new Error('--key 不能为空');
+  }
+  const summary = options.summary ?? (options.summaryFile ? readFileSync(path.resolve(options.summaryFile), 'utf8') : undefined);
+  if (!summary) {
+    throw new Error('需提供 --summary 或 --summary-file 之一');
+  }
+  const root = path.resolve(pathArg);
+  const result = new MigrateToolHandler(root).execute('migrate_label', {
+    target: options.target,
+    key: options.key,
+    name: options.name,
+    summary,
+  });
+  console.log(result.content.map((c) => c.text).join('\n'));
+}
+
 const LEDGER_STATUSES: LedgerStatus[] = ['pending', 'in-progress', 'migrated', 'verified', 'blocked'];
 
 interface LedgerSetOptions {
@@ -1040,6 +1076,20 @@ function buildProgram(): Command {
       console.log(result.content.map((c) => c.text).join('\n'));
     });
 
+  program
+    .command('label <path>')
+    .description(
+      '回填功能簇(Feature)或迁移单元(Unit)的语义标注(LLM 分析结果),写入 .migration/labels.json,供 app_features/migrate_order 展示;与 MCP migrate_label 同一处理逻辑'
+    )
+    .requiredOption('--target <t>', 'feature 或 unit')
+    .requiredOption('--key <k>', 'feature 的 sig/名称,或 unit 的序号/id/label/成员模块名')
+    .option('--name <n>', '(可选)语义名,单行短标题')
+    .option('--summary <s>', '功能与迁移要点说明(与 --summary-file 二选一)')
+    .option('--summary-file <path>', '从文件读取 summary(内容较长或含多行时更可靠,避免 shell 转义问题)')
+    .action((pathArg: string, options: LabelCliOptions) => {
+      cmdLabel(pathArg, options);
+    });
+
   const ledger = program
     .command('ledger')
     .description('迁移台账:登记/查看每个单元的迁移状态(供 verify --unit 分类与作用域降级)');
@@ -1102,4 +1152,4 @@ if (require.main === module) {
   void main();
 }
 
-export { buildProgram };
+export { buildProgram, cmdLabel };

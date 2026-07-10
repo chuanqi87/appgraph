@@ -175,6 +175,9 @@ export function composeRouteEdges(ctx: ResolutionContext): Edge[] {
  *   - `.replace(R.id.x, MyFragment())` / `.add(containerId, MyFragment.newInstance())`
  *   - reified KTX `commit { replace<MyFragment>(R.id.x) }`
  *   - `MyDialog().show(fm, tag)` / `MyDialog.newInstance(...).show(fm, tag)`
+ *   - string-tag dispatch `loadFragment(MyFragment.TAG)` / `createFragmentInstance(MyFragment.TAG)`
+ *     (AntennaPod), where the `.TAG` receiver names the destination Fragment
+ *     directly — a dynamic `loadFragment(tag)` has no such receiver and is dropped.
  * The target must be named `*Fragment`/`*Dialog` (so `list.add(0, Foo())` and
  * `builder.show()` don't produce spurious edges) AND resolve to exactly one class.
  */
@@ -186,6 +189,15 @@ const FRAGMENT_TXN_RE =
 const FRAGMENT_KTX_RE = /\b(?:replace|add)\s*<\s*([A-Z]\w*)\s*>/g;
 // `MyDialog().show(fm, tag)` / `MyDialog.newInstance(args).show(fm, tag)`.
 const DIALOG_SHOW_RE = /\b([A-Z]\w*)\s*(?:\([^;{}\n]*\)|\.newInstance\s*\([^;{}\n]*\))\s*\.show\s*\(/g;
+// String-tag dispatch (AntennaPod): a fragment-navigation method whose name
+// contains "Fragment" (`loadFragment` / `createFragmentInstance` / `loadChildFragment`)
+// invoked with a `XxxFragment.TAG` constant as its first argument — the `.TAG`
+// RECEIVER names the target Fragment directly, so no switch/when evaluation is
+// needed. A dynamic tag (`loadFragment(tag)`, `getDefaultPage()`) has no
+// `XxxFragment.TAG` receiver, so it never matches; `case XxxFragment.TAG:` labels
+// and `tag.equals(XxxFragment.TAG)` comparisons lack the `…Fragment…(` method
+// shape, so they don't fire either.
+const FRAGMENT_TAG_RE = /\b\w*[Ff]ragment\w*\s*\(\s*([A-Z]\w*Fragment)\s*\.\s*TAG\b/g;
 // Precision gate: only a `*Fragment` / `*Dialog`-named target is a fragment nav —
 // this is what keeps `list.add(0, Foo())` and `builder.show()` from producing a
 // spurious edge (mirrors android-structure's SCREEN_FILE_RE naming convention).
@@ -204,11 +216,12 @@ export function androidFragmentEdges(ctx: ResolutionContext): Edge[] {
     if (!file.endsWith('.kt') && !file.endsWith('.java')) continue;
     const content = ctx.readFile(file);
     if (!content) continue;
-    // Cheap gate: a fragment-txn / dialog-show construct must plausibly be here.
+    // Cheap gate: a fragment-txn / dialog-show / tag-load construct must plausibly be here.
     if (
       !content.includes('.show(') &&
       !content.includes('replace') &&
-      !content.includes('.add(')
+      !content.includes('.add(') &&
+      !content.includes('.TAG')
     ) {
       continue;
     }
@@ -247,6 +260,7 @@ export function androidFragmentEdges(ctx: ResolutionContext): Edge[] {
     scan(FRAGMENT_TXN_RE, 'fragment-transaction');
     scan(FRAGMENT_KTX_RE, 'fragment-transaction');
     scan(DIALOG_SHOW_RE, 'dialog-show');
+    scan(FRAGMENT_TAG_RE, 'fragment-tag');
   }
   return edges;
 }
