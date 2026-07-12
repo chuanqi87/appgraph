@@ -181,7 +181,6 @@ function buildLegend(state: SidebarState, callbacks: SidebarCallbacks): HTMLElem
       }
     } else {
       for (const [kind, style] of Object.entries(APP_NODE_STYLES)) {
-        if (kind === 'ArchModule') continue;
         const count = state.appModel.nodesByKind.get(kind)?.length ?? 0;
         if (count === 0) continue;
         const item = el('div', {

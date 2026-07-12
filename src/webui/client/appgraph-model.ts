@@ -23,6 +23,12 @@ export interface AppGraphModel {
   childrenOf: Map<string, AppNodeWire[]>;
   /** Modules (ArchModule) sorted by name. */
   modules: AppNodeWire[];
+  /** Every node with no containing node — ArchModules plus any screen/entry/
+   *  capability/etc. that module detection didn't group under one. This is
+   *  the node set the unified graph's Level 1 plots: restricting to `modules`
+   *  alone silently drops ungrouped nodes from the canvas even though the
+   *  sidebar's stat counts and legend still list them. */
+  topLevelNodes: AppNodeWire[];
   /** Features sorted by name, grouped by role (attrs.role). */
   featuresByRole: Map<string, AppNodeWire[]>;
   /** Screens sorted by name. */
@@ -62,6 +68,9 @@ export function buildAppGraphModel(graph: AppGraphWire): AppGraphModel {
   }
 
   const modules = sortBy((nodesByKind.get('ArchModule') ?? []));
+  const topLevelNodes = sortBy(
+    graph.nodes.filter((n) => n.kind === 'ArchModule' || (containersOf.get(n.id) ?? []).length === 0)
+  );
   const featuresByRole = new Map<string, AppNodeWire[]>();
   for (const f of nodesByKind.get('Feature') ?? []) {
     push(featuresByRole, roleOf(f), f);
@@ -84,6 +93,7 @@ export function buildAppGraphModel(graph: AppGraphWire): AppGraphModel {
     containersOf,
     childrenOf,
     modules,
+    topLevelNodes,
     featuresByRole,
     screens,
     capabilities,

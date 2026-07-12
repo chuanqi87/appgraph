@@ -144,8 +144,15 @@ export async function renderUnifiedGraph(container: HTMLElement): Promise<void> 
     } catch { /* fall through */ }
   }
 
-  if (!migrationModel && !appModel && !status.codegraph.indexed) {
-    mount(container, empty('No graph data available. Run "appgraph build" or "codegraph index" first.'));
+  if (!migrationModel && !appModel) {
+    // Level 2 (code symbols) always zooms in FROM a module — it has no
+    // standalone entry point, so without a migration/app graph there is no
+    // module to focus and nothing would ever render. Say so explicitly
+    // instead of silently mounting a permanently empty canvas.
+    const message = status.codegraph.indexed
+      ? `CodeGraph is indexed (${status.codegraph.stats?.nodeCount ?? 0} symbols), but no AppGraph or migration data was found. Run "appgraph build" in this project to see the module/screen graph.`
+      : 'No graph data available. Run "appgraph build" or "codegraph index" first.';
+    mount(container, empty(message));
     return;
   }
 
@@ -404,7 +411,7 @@ function buildLevel1Data(state: GraphState, positions: Map<string, { x: number; 
   const visNodes: VNode[] = [];
   const visEdges: VEdge[] = [];
 
-  const modules = model.modules;
+  const modules = model.topLevelNodes;
   const unitColorMap = new Map<string, number>();
   if (migration) {
     migration.units.forEach((u, i) => unitColorMap.set(u.id, i));
@@ -646,7 +653,7 @@ function getVisibleNodes(state: GraphState): Array<{ id: string; label: string; 
   }
   if (state.currentLevel === 1 && state.appModel) {
     const migration = state.migrationModel;
-    return state.appModel.modules.map((m) => {
+    return state.appModel.topLevelNodes.map((m) => {
       let color = moduleColorByKind(m.kind).background;
       if (migration) {
         const unitId = migration.moduleToUnit.get(m.id);
