@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    @apply h-full m-0;
+  }
+  body {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  .sidebar {
+    @apply w-72 flex-shrink-0 h-screen overflow-y-auto bg-sidebar-bg text-sidebar-fg p-4 border-r border-sidebar-border;
+  }
+  .sidebar h1 {
+    @apply text-sm font-bold text-white m-0 mb-1;
+  }
+  .sidebar .sub {
+    @apply text-xs text-sidebar-muted mb-4;
+  }
+  .sidebar h2 {
+    @apply text-xs uppercase tracking-wider text-sidebar-muted mt-4 mb-2;
+  }
+
+  .stat-grid {
+    @apply grid grid-cols-2 gap-1.5;
+  }
+  .stat-box {
+    @apply bg-sidebar-surface rounded-md p-2 text-center;
+  }
+  .stat-box .num {
+    @apply text-lg font-semibold text-white;
+  }
+  .stat-box .lbl {
+    @apply text-[10px] text-sidebar-muted mt-0.5;
+  }
+  .stat-box.warn .num { @apply text-amber-500; }
+  .stat-box.good .num { @apply text-green-500; }
+
+  .search-input {
+    @apply w-full px-2 py-1.5 rounded-md border border-sidebar-border bg-sidebar-surface text-white text-xs;
+    @apply focus:outline-none focus:border-blue-400;
+  }
+
+  .tool-btn {
+    @apply inline-block mr-1.5 my-0.5 px-2.5 py-1 text-xs bg-sidebar-surface border border-sidebar-border text-sidebar-fg rounded-md cursor-pointer;
+    @apply hover:bg-zinc-700;
+  }
+  .tool-btn.active {
+    @apply bg-blue-600 border-blue-600 text-white;
+  }
+
+  .legend-item {
+    @apply flex items-center gap-1.5 text-xs py-0.5 px-0.5 cursor-pointer rounded;
+    @apply hover:bg-sidebar-surface;
+  }
+  .legend-item.disabled {
+    @apply opacity-30;
+  }
+  .swatch {
+    @apply w-3 h-3 rounded-sm flex-shrink-0;
+  }
+
+  .graph-wrap {
+    @apply flex-1 h-screen relative bg-panel-alt;
+  }
+  .graph-canvas {
+    @apply absolute inset-0;
+  }
+
+  .detail-float {
+    @apply absolute top-2.5 left-2.5 z-10 w-96 max-w-[calc(100%-20px)] max-h-[calc(100%-20px)];
+    @apply flex flex-col bg-detail-bg text-detail-fg rounded-lg border border-detail-border shadow-2xl;
+  }
+  .detail-head {
+    @apply flex items-center justify-between flex-shrink-0 px-3 py-2.5 border-b border-detail-border;
+    @apply text-xs font-semibold uppercase tracking-wider text-sidebar-muted;
+  }
+  .detail-close {
+    @apply bg-transparent border-none text-sidebar-muted text-lg cursor-pointer;
+    @apply hover:text-white;
+  }
+  .detail-body {
+    @apply p-3 text-xs leading-relaxed overflow-y-auto min-h-[40px];
+  }
+  .detail-body .name {
+    @apply text-sm font-semibold text-white break-all;
+  }
+  .detail-body .row .k {
+    @apply text-sidebar-muted;
+  }
+
+  .node-list-panel {
+    @apply w-80 flex-shrink-0 h-screen overflow-hidden flex flex-col bg-panel-bg border-l border-panel-border;
+  }
+  .node-list-panel.collapsed {
+    @apply w-0 border-l-0;
+  }
+  .node-list-header {
+    @apply px-3.5 py-3 border-b border-panel-border flex-shrink-0;
+  }
+  .node-list-header h1 {
+    @apply text-sm font-semibold text-zinc-900 m-0;
+  }
+  .node-list-controls {
+    @apply px-3 py-2.5 border-b border-panel-border flex flex-col gap-1.5 flex-shrink-0;
+  }
+  .list-search {
+    @apply w-full px-2 py-1.5 text-xs border border-panel-border rounded-md;
+    @apply focus:outline-none focus:border-blue-400;
+  }
+  .list-row {
+    @apply px-3.5 py-1.5 border-b border-zinc-100 cursor-pointer border-l-[3px] border-transparent;
+    @apply hover:bg-panel-alt;
+  }
+  .list-row.selected {
+    @apply bg-blue-50;
+  }
+
+  .level-indicator {
+    @apply absolute bottom-2.5 left-2.5 z-10 px-3 py-1 bg-white/90 rounded-md text-xs text-zinc-700 shadow border border-panel-border;
+  }
+  .toggle-list-btn {
+    @apply absolute top-2.5 right-2.5 z-10 bg-white border border-panel-border text-zinc-700 px-2.5 py-1 text-xs rounded-md cursor-pointer shadow;
+    @apply hover:bg-panel-alt;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.2);
+    border-radius: 3px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}

@@ -8,6 +8,7 @@
  */
 
 import type { AppEdgeWire, AppNodeWire } from '../wire-types';
+import type { LedgerStatusWire } from '../wire-types';
 import type { AppGraphModel } from './appgraph-model';
 
 export interface NodeStyle {
@@ -134,4 +135,28 @@ export function featureRoleTone(role: string): { label: string; tone: string } {
     default:
       return { label: 'Aligned', tone: 'ok' };
   }
+}
+
+// =============================================================================
+// Migration status styling
+// =============================================================================
+
+export const MIGRATION_STATUS_STYLES: Record<LedgerStatusWire, { color: string; label: string; tone: string }> = {
+  pending: { color: '#9aa4af', label: 'Pending', tone: '' },
+  'in-progress': { color: '#2f6fed', label: 'In Progress', tone: 'info' },
+  migrated: { color: '#b8a13a', label: 'Migrated', tone: 'warn' },
+  verified: { color: '#4caf7d', label: 'Verified', tone: 'ok' },
+  blocked: { color: '#c53030', label: 'Blocked', tone: 'danger' },
+};
+
+export function migrationStatusColor(status: LedgerStatusWire): string {
+  return MIGRATION_STATUS_STYLES[status].color;
+}
+
+export function migrationStatusLabel(status: LedgerStatusWire): string {
+  return MIGRATION_STATUS_STYLES[status].label;
+}
+
+export function migrationStatusTone(status: LedgerStatusWire): string {
+  return MIGRATION_STATUS_STYLES[status].tone;
 }

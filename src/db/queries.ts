@@ -932,6 +932,48 @@ export class QueryBuilder {
   }
 
   /**
+   * Get all nodes whose filePath starts with `dir` — the code-level
+   * contents of a module's source directory. Used by the unified graph's
+   * Level 2 (code symbols) when zooming into a module.
+   */
+  getNodesByDirPrefix(dir: string, limit = 500): Node[] {
+    const prefix = dir.replace(/\/+$/, '');
+    const rows = this.db.prepare(
+      "SELECT * FROM nodes WHERE file_path LIKE ? || '/%' OR file_path = ? ORDER BY kind, name LIMIT ?"
+    ).all(prefix, prefix, limit) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Count of nodes in a directory prefix (for truncation detection).
+   */
+  countNodesByDirPrefix(dir: string): number {
+    const prefix = dir.replace(/\/+$/, '');
+    const row = this.db.prepare(
+      "SELECT COUNT(*) as count FROM nodes WHERE file_path LIKE ? || '/%' OR file_path = ?"
+    ).get(prefix, prefix) as { count: number };
+    return row.count;
+  }
+
+  /**
+   * Get all edges where BOTH source and target are nodes inside `dir`.
+   * Uses correlated subqueries so the LIMIT applied to nodes is honored.
+   */
+  getEdgesBetweenDirPrefix(dir: string, nodeLimit = 500): Edge[] {
+    const prefix = dir.replace(/\/+$/, '');
+    const sql = `
+      SELECT * FROM edges
+      WHERE source IN (
+        SELECT id FROM nodes WHERE file_path LIKE ? || '/%' OR file_path = ? ORDER BY kind, name LIMIT ?
+      )
+      AND target IN (
+        SELECT id FROM nodes WHERE file_path LIKE ? || '/%' OR file_path = ? ORDER BY kind, name LIMIT ?
+      )`;
+    const rows = this.db.prepare(sql).all(prefix, prefix, nodeLimit, prefix, prefix, nodeLimit) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  /**
    * Search nodes by name using FTS with fallback to LIKE for better matching
    *
    * Search strategy:

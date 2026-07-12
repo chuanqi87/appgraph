@@ -16,9 +16,12 @@ import * as path from 'node:path';
 import { exec } from 'node:child_process';
 import { CodeGraph } from '../index';
 import { appGraphPath } from '../appgraph/paths';
+import { migrationGraphPath } from '../migration/serialize';
+import { getLedgerPath } from '../migration/paths';
 import { Router } from './router';
 import { registerCodeGraphRoutes } from './routes/codegraph-routes';
 import { registerAppGraphRoutes } from './routes/appgraph-routes';
+import { registerMigrationRoutes } from './routes/migration-routes';
 
 export interface WebUiOptions {
   /** Preferred port. Falls back to an OS-assigned free port if taken. */
@@ -28,7 +31,7 @@ export interface WebUiOptions {
   /** Auto-open the default browser once listening. Defaults to true. */
   open?: boolean;
   /** Which tab the client should land on. Defaults to 'codegraph'. */
-  initialLayer?: 'codegraph' | 'appgraph';
+  initialLayer?: 'codegraph' | 'appgraph' | 'migration';
 }
 
 export interface WebUiServer {
@@ -72,17 +75,22 @@ export async function startWebUiServer(root: string, options: WebUiOptions = {})
       appgraph: {
         built: fs.existsSync(appGraphPath(resolvedRoot)),
       },
+      migration: {
+        built: fs.existsSync(migrationGraphPath(resolvedRoot)),
+        ledger: fs.existsSync(getLedgerPath(resolvedRoot)),
+      },
     },
   }));
   registerCodeGraphRoutes(router, getCodeGraph);
   registerAppGraphRoutes(router, resolvedRoot, getCodeGraph);
+  registerMigrationRoutes(router, resolvedRoot);
 
   const server = http.createServer((req, res) => {
     void handleRequest(req, res, router);
   });
 
   const port = await listen(server, host, options.port ?? DEFAULT_PORT);
-  const url = `http://${host}:${port}/${options.initialLayer === 'appgraph' ? '#/appgraph' : ''}`;
+  const url = `http://${host}:${port}/${options.initialLayer === 'appgraph' ? '#/appgraph' : options.initialLayer === 'migration' ? '#/migration' : ''}`;
 
   if (options.open !== false) {
     openBrowser(url);

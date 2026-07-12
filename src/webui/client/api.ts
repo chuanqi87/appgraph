@@ -8,14 +8,16 @@
 
 import type { Edge, FileRecord, GraphStats, Node, SearchResult } from '../../types';
 import type { AppEdgeWithOther, AppGraphWire, AppNodeSummary, AppNodeWire, DrillDownTarget, EdgeWithOther, NodeSummary } from '../wire-types';
+import type { LedgerWire, MigrationGraphWire } from '../wire-types';
 
 export type { EdgeWithOther, NodeSummary, AppEdgeWithOther, AppNodeSummary, DrillDownTarget };
 
 export interface StatusResponse {
   projectRoot: string;
-  initialLayer: 'codegraph' | 'appgraph';
+  initialLayer: 'codegraph' | 'appgraph' | 'migration';
   codegraph: { indexed: boolean; stats: GraphStats | null };
   appgraph: { built: boolean };
+  migration: { built: boolean; ledger: boolean };
 }
 
 export interface NodeSearchResponse {
@@ -58,6 +60,12 @@ export interface SubgraphResponse {
   truncated: boolean;
 }
 
+export interface DirSubgraphResponse {
+  nodes: Node[];
+  edges: Edge[];
+  truncated: boolean;
+}
+
 export interface AppGraphResponse {
   graph: AppGraphWire;
 }
@@ -67,6 +75,14 @@ export interface AppNodeDetailResponse {
   incoming: AppEdgeWithOther[];
   outgoing: AppEdgeWithOther[];
   drillDown: DrillDownTarget[];
+}
+
+export interface MigrationGraphResponse {
+  graph: MigrationGraphWire | null;
+}
+
+export interface MigrationLedgerResponse {
+  ledger: LedgerWire | null;
 }
 
 class ApiError extends Error {}
@@ -135,7 +151,14 @@ export const api = {
     edgeKind?: string[];
   }): Promise<SubgraphResponse> => request(`/api/codegraph/subgraph${qs(opts)}`),
 
+  dirSubgraph: (dir: string, limit?: number): Promise<DirSubgraphResponse> =>
+    request(`/api/codegraph/dir-subgraph${qs({ dir, limit })}`),
+
   appGraph: (): Promise<AppGraphResponse> => request('/api/appgraph/graph'),
 
   appNode: (id: string): Promise<AppNodeDetailResponse> => request(`/api/appgraph/nodes/${encodeURIComponent(id)}`),
+
+  migrationGraph: (): Promise<MigrationGraphResponse> => request('/api/migration/graph'),
+
+  migrationLedger: (): Promise<MigrationLedgerResponse> => request('/api/migration/ledger'),
 };

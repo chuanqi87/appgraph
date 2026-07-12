@@ -168,6 +168,21 @@ export function registerCodeGraphRoutes(router: Router, getCodeGraph: GetCodeGra
       },
     };
   });
+
+  // Directory-prefix subgraph — all code symbols within a module's source
+  // directory plus all edges between them. Backs the unified graph's Level 2
+  // (code symbols) when zooming into a module.
+  router.get('/api/codegraph/dir-subgraph', ({ query }) => {
+    const cg = getCodeGraph();
+    if (!cg) return NOT_INDEXED;
+
+    const dir = query.get('dir');
+    if (!dir) return { status: 400, body: { error: 'Missing required "dir" query param' } };
+
+    const limit = clampInt(query.get('limit'), 500, 1, MAX_SUBGRAPH_LIMIT);
+    const result = cg.getDirSubgraph(dir, limit);
+    return { body: result };
+  });
 }
 
 function parseListParam(query: URLSearchParams, key: string): string[] | undefined {

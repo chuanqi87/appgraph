@@ -882,3 +882,143 @@ button.primary {
 }
 
 .legend-label { color: var(--fg); }
+
+/* ===========================================================================
+   Migration layer — progress dashboard, wave groups, unit cards
+   =========================================================================== */
+
+.migration-overview { padding: 16px 20px; }
+
+/* ---- progress dashboard ---- */
+
+.progress-dashboard {
+  margin-bottom: 16px;
+}
+
+.progress-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--border);
+  gap: 1px;
+}
+
+.progress-segment {
+  height: 100%;
+  min-width: 2px;
+  transition: width 0.2s;
+}
+
+.progress-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.progress-pct {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* ---- migration order rail ---- */
+
+.wave-group {
+  margin-bottom: 14px;
+}
+
+.wave-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  padding-left: 10px;
+  position: relative;
+}
+
+.wave-label::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.unit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.unit-card {
+  display: block;
+  text-decoration: none;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--unit-color, var(--border));
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--bg);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.unit-card:hover {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.unit-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.unit-order {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.unit-label {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unit-card-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ---- unit detail ---- */
+
+.unit-order-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--unit-color, var(--border)) 15%, var(--bg-alt));
+  border: 2px solid var(--unit-color, var(--border));
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--unit-color, var(--fg));
+  flex: 0 0 auto;
+}

@@ -1008,6 +1008,19 @@ export class CodeGraph {
   }
 
   /**
+   * Get all code symbols within a module's source directory, plus all edges
+   * between them. Used by the unified graph's Level 2 (code symbols) when
+   * zooming into a module. Returns truncated=true if the dir has more nodes
+   * than `limit`.
+   */
+  getDirSubgraph(dir: string, limit = 500): { nodes: Node[]; edges: Edge[]; truncated: boolean } {
+    const nodes = this.queries.getNodesByDirPrefix(dir, limit);
+    const total = this.queries.countNodesByDirPrefix(dir);
+    const edges = this.queries.getEdgesBetweenDirPrefix(dir, limit);
+    return { nodes, edges, truncated: total > limit };
+  }
+
+  /**
    * Graph-derived prompt matching for the front-load hook's MEDIUM tier:
    * which indexed symbols do these prose words name? "state machine des
    * commandes" → `OrderStateMachine`, in any human language whose technical

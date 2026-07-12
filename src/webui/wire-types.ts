@@ -78,6 +78,7 @@ export interface AppGraphWire {
   nodes: AppNodeWire[];
   edges: AppEdgeWire[];
   coverageWarnings: CoverageWarningWire[];
+  navFrameworks?: string[];
 }
 
 export interface AppNodeSummary {
@@ -96,4 +97,52 @@ export interface DrillDownTarget {
   name: string;
   kind: string;
   filePath: string;
+}
+
+// =============================================================================
+// Migration wire types — mirrors of ../migration/types.ts and ledger.ts, kept
+// structural (same no-import-of-real-types rule as AppGraphWire above) so the
+// browser client's DOM-only tsconfig stays clean.
+// =============================================================================
+
+export interface MigrationUnitWire {
+  id: string;
+  moduleIds: string[];
+  label: string;
+  order: number;
+  cyclic: boolean;
+  wave?: number;
+  dependsOn?: string[];
+  necessity?: 'dev-only';
+}
+
+export interface MigrationOrderWire {
+  units: MigrationUnitWire[];
+}
+
+export interface MigrationGraphWire {
+  schemaVersion: number;
+  source: { platform: string; app: { name: string; packageName: string } };
+  target: { platform: string };
+  nodes: AppNodeWire[];
+  edges: AppEdgeWire[];
+  order?: MigrationOrderWire;
+  coverageWarnings: CoverageWarningWire[];
+  navFrameworks?: string[];
+}
+
+export type LedgerStatusWire = 'pending' | 'in-progress' | 'migrated' | 'verified' | 'blocked';
+
+export interface LedgerEntryWire {
+  status: LedgerStatusWire;
+  targetModule?: string;
+  targetPaths?: string[];
+  exportMap?: Record<string, string>;
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface LedgerWire {
+  schemaVersion: number;
+  units: Record<string, LedgerEntryWire>;
 }
