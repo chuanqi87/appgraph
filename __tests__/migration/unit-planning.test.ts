@@ -308,6 +308,67 @@ describe('P · unit planning — splitting', () => {
     expect(restUnits[0]!.wave).toBe(restUnits[1]!.wave); // parallel
   });
 
+  it('re-slices a rest remainder UNDER maxUnitSymbols once it exceeds maxRestSymbols (P3.5)', () => {
+    // The koler `:chooloolib#rest` shape: a module big enough to split, whose
+    // remainder (1400 symbols across many packages) sits WELL under the
+    // module-split cap (3000) yet is far too big to convert whole. The
+    // remainder's own budget (maxRestSymbols=600) is what must catch it.
+    const big = archModule('big', 5000);
+    const f1 = feature('Feat', 'ffff', big.id, ['big/src/main/kotlin/app/feat/Screen.kt']);
+    const graph = fixture([big, f1], []);
+    const files = new Map([
+      [
+        big.id,
+        [
+          'big/src/main/kotlin/app/feat/Screen.kt', // covered by f1
+          'big/src/main/kotlin/app/adapter/A.kt',
+          'big/src/main/kotlin/app/data/D.kt',
+          'big/src/main/kotlin/app/ui/V.kt',
+        ],
+      ],
+    ]);
+    const counts = new Map([
+      ['big/src/main/kotlin/app/feat/Screen.kt', 3600],
+      ['big/src/main/kotlin/app/adapter/A.kt', 500],
+      ['big/src/main/kotlin/app/data/D.kt', 450],
+      ['big/src/main/kotlin/app/ui/V.kt', 450],
+    ]);
+    // rest = 1400 symbols < maxUnitSymbols(3000), so the PRE-P3.5 threshold
+    // would keep it a single monolith. With maxRestSymbols=600 it must split.
+    const r = planUnits(graph.order!, graph, OPTS, files, counts);
+    const restUnits = r.units.filter((u) => u.featureSig !== 'ffff');
+    expect(restUnits.length).toBeGreaterThan(1);
+    expect(restUnits.every((u) => u.symbolCount <= OPTS.maxRestSymbols)).toBe(true);
+    expect(restUnits.map((u) => u.label)).toEqual([
+      ':big#rest/app.adapter',
+      ':big#rest/app.data',
+      ':big#rest/app.ui',
+    ]);
+    // The whole `rest` sig is gone — no monolith remainder survives.
+    expect(r.units.some((u) => u.featureSig === 'rest')).toBe(false);
+  });
+
+  it('re-slices a many-small-file rest remainder on the file cap even when symbols are low (P3.5)', () => {
+    // 24 tiny files (1 symbol each) across two packages: 24 symbols total is far
+    // under every symbol budget, but 24 files > maxRestFiles(20) overwhelms an
+    // agent — the file dimension must force a split.
+    const big = archModule('big', 4000);
+    const f1 = feature('Feat', 'ffff', big.id, ['big/src/main/kotlin/app/feat/Screen.kt']);
+    const graph = fixture([big, f1], []);
+    const restFiles = [
+      ...Array.from({ length: 12 }, (_, i) => `big/src/main/kotlin/app/a/F${i}.kt`),
+      ...Array.from({ length: 12 }, (_, i) => `big/src/main/kotlin/app/b/F${i}.kt`),
+    ];
+    const files = new Map([[big.id, ['big/src/main/kotlin/app/feat/Screen.kt', ...restFiles]]]);
+    const counts = new Map<string, number>([['big/src/main/kotlin/app/feat/Screen.kt', 3600]]);
+    restFiles.forEach((f) => counts.set(f, 1));
+
+    const r = planUnits(graph.order!, graph, OPTS, files, counts);
+    const restUnits = r.units.filter((u) => u.featureSig !== 'ffff');
+    expect(restUnits.length).toBeGreaterThan(1);
+    expect(restUnits.every((u) => u.files!.length <= OPTS.maxRestFiles)).toBe(true);
+  });
+
   it('never splits a cyclic SCC unit or a module without subdivision Features', () => {
     const a = archModule('cyca', 4000);
     const b = archModule('cycb', 4000);

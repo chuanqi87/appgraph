@@ -18,10 +18,15 @@
  *   - SPLIT an oversized single-module unit (above `maxUnitSymbols`) along its
  *     M2 subdivision Features: one sub-unit per Feature (its member files),
  *     plus a remainder sub-unit for the module's uncovered files. Sub-units
- *     order bottom-up along the Feature→Feature depends_on edges. When the
- *     remainder itself exceeds `maxUnitSymbols`, it is further split by source
- *     DIRECTORY (bin-packed in sorted dir order) so no single `rest` slice
- *     stays a monolith.
+ *     order bottom-up along the Feature→Feature depends_on edges. The remainder
+ *     (`rest`) is the module's LOW-COHESION grab-bag — everything no Feature
+ *     captured — so it carries its OWN, much smaller budget (`maxRestSymbols` /
+ *     `maxRestFiles`, NOT the module-level `maxUnitSymbols`): whenever it
+ *     exceeds either, it is bin-packed by source DIRECTORY (sorted dir order)
+ *     so no single `rest` slice stays an unconvertible monolith. Decoupling the
+ *     two budgets is deliberate — a 3000-symbol *coherent* module can convert
+ *     whole, but a 1400-symbol remainder spanning 30+ unrelated packages cannot
+ *     (P3.5).
  *
  * Deliberately NOT part of the graph: `graph.order` is a graph fact that sync
  * preserves and the fingerprint covers; the packing granularity is a plan-time
@@ -39,6 +44,20 @@ export interface PlanningOptions {
   minUnitSymbols: number;
   /** Single-module units above this symbol count are candidates for splitting. */
   maxUnitSymbols: number;
+  /**
+   * The split `rest` remainder's OWN symbol budget — deliberately far below
+   * `maxUnitSymbols`. A remainder is a low-cohesion grab-bag (everything no
+   * Feature captured), not a coherent module, so its convertible size is much
+   * smaller; a remainder over this is re-sliced by source directory (P3.5).
+   */
+  maxRestSymbols: number;
+  /**
+   * The split `rest` remainder's OWN file-count budget. A remainder of many
+   * small files overwhelms a converter agent even under the symbol budget
+   * (koler's `:chooloolib#rest`: 67 files / 1429 symbols), so file count is a
+   * first-class split dimension for the remainder (P3.5).
+   */
+  maxRestFiles: number;
   /** false → keep the SCC order 1:1 (the `--no-unit-planning` escape hatch). */
   enabled: boolean;
 }
@@ -46,6 +65,8 @@ export interface PlanningOptions {
 export const DEFAULT_PLANNING_OPTIONS: PlanningOptions = {
   minUnitSymbols: 120,
   maxUnitSymbols: 3000,
+  maxRestSymbols: 600,
+  maxRestFiles: 20,
   enabled: true,
 };
 
@@ -642,14 +663,16 @@ interface RestSlice {
 }
 
 /**
- * Slice the module's uncovered `rest` files. Under `maxUnitSymbols` (or when it
- * degenerates to a single group) it stays ONE `rest` slice — byte-identical to
- * the pre-P3.4 behavior. An oversized remainder is bin-packed by SOURCE
- * DIRECTORY: directories are accumulated in sorted order and flushed whenever
- * adding the next would overflow the threshold (a lone over-threshold directory
- * becomes its own slice). Deterministic — directory-name sorted — and each
- * slice's sig is derived from its first (sorted) directory, unique across slices
- * since the sorted directories partition contiguously.
+ * Slice the module's uncovered `rest` files against the remainder's OWN budget
+ * (`maxRestSymbols` / `maxRestFiles`, NOT `maxUnitSymbols`). Within BOTH budgets
+ * — or when it degenerates to a single group — it stays ONE `rest` slice. An
+ * over-budget remainder is bin-packed by SOURCE DIRECTORY: directories are
+ * accumulated in sorted order and flushed whenever adding the next would
+ * overflow EITHER budget (a lone over-budget directory becomes its own slice —
+ * `subdivideRest` never splits within a directory). Deterministic — directory-
+ * name sorted — and each slice's sig is derived from its first (sorted)
+ * directory, unique across slices since the sorted directories partition
+ * contiguously.
  */
 function subdivideRest(
   rest: string[],
@@ -658,7 +681,7 @@ function subdivideRest(
 ): RestSlice[] {
   if (rest.length === 0) return [];
   const wholeRest: RestSlice = { sig: 'rest', label: 'rest', files: rest };
-  if (countSymbols(rest) <= opts.maxUnitSymbols) return [wholeRest];
+  if (countSymbols(rest) <= opts.maxRestSymbols && rest.length <= opts.maxRestFiles) return [wholeRest];
 
   const byDir = new Map<string, string[]>();
   for (const f of rest) {
@@ -682,7 +705,12 @@ function subdivideRest(
   for (const dir of [...byDir.keys()].sort()) {
     const files = byDir.get(dir)!;
     const size = countSymbols(files);
-    if (binFiles.length > 0 && binSize + size > opts.maxUnitSymbols) flush();
+    if (
+      binFiles.length > 0 &&
+      (binSize + size > opts.maxRestSymbols || binFiles.length + files.length > opts.maxRestFiles)
+    ) {
+      flush();
+    }
     if (binKey === null) binKey = dir;
     binFiles.push(...files);
     binSize += size;

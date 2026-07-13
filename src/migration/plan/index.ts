@@ -99,6 +99,8 @@ export interface MigrationPlan {
     enabled: boolean;
     minUnitSymbols: number;
     maxUnitSymbols: number;
+    maxRestSymbols: number;
+    maxRestFiles: number;
     merged: number;
     split: number;
   };
@@ -191,6 +193,8 @@ export function buildMigrationPlan(
       enabled: opts.enabled,
       minUnitSymbols: opts.minUnitSymbols,
       maxUnitSymbols: opts.maxUnitSymbols,
+      maxRestSymbols: opts.maxRestSymbols,
+      maxRestFiles: opts.maxRestFiles,
       merged: planned.stats.merged,
       split: planned.stats.split,
     },

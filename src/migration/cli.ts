@@ -292,6 +292,8 @@ interface PlanCliOptions {
   out?: string;
   minUnitSymbols?: string;
   maxUnitSymbols?: string;
+  maxRestSymbols?: string;
+  maxRestFiles?: string;
   /** commander's --no-unit-planning lands here as false. */
   unitPlanning?: boolean;
 }
@@ -321,6 +323,12 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
         : {}),
       ...(options.maxUnitSymbols !== undefined
         ? { maxUnitSymbols: parsePositiveInt(options.maxUnitSymbols, '--max-unit-symbols') }
+        : {}),
+      ...(options.maxRestSymbols !== undefined
+        ? { maxRestSymbols: parsePositiveInt(options.maxRestSymbols, '--max-rest-symbols') }
+        : {}),
+      ...(options.maxRestFiles !== undefined
+        ? { maxRestFiles: parsePositiveInt(options.maxRestFiles, '--max-rest-files') }
         : {}),
     });
     const planDir = writeMigrationPlan(root, plan, contracts);
@@ -356,7 +364,8 @@ function cmdPlan(pathArg: string, options: PlanCliOptions): void {
     if (plan.planning.enabled) {
       console.log(
         `  单元计划:聚合收敛 ${plan.planning.merged} 个 · 拆分 ${plan.planning.split} 个大模块` +
-          `(阈值 ${plan.planning.minUnitSymbols}–${plan.planning.maxUnitSymbols} 符号)`
+          `(阈值 ${plan.planning.minUnitSymbols}–${plan.planning.maxUnitSymbols} 符号 · ` +
+          `rest 上限 ${plan.planning.maxRestSymbols} 符号/${plan.planning.maxRestFiles} 文件)`
       );
     }
     for (const unit of plan.units.slice(0, 8)) {
@@ -1044,6 +1053,8 @@ function buildProgram(): Command {
     .option('-o, --out <file>', '迁移图 JSON 路径(默认 <root>/.migration/migration-graph.json)')
     .option('--min-unit-symbols <n>', '小于该符号数的单元参与聚合(默认 120)')
     .option('--max-unit-symbols <n>', '大于该符号数的单模块单元按 Feature 细分拆分(默认 3000)')
+    .option('--max-rest-symbols <n>', '拆分后 rest 兜底单元超过该符号数则按目录再切(默认 600)')
+    .option('--max-rest-files <n>', '拆分后 rest 兜底单元超过该文件数则按目录再切(默认 20)')
     .option('--no-unit-planning', '关闭单元计划层,工单与模块 SCC 1:1')
     .action((pathArg: string, options: PlanCliOptions) => {
       cmdPlan(pathArg, options);
