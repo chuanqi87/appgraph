@@ -8,6 +8,7 @@
     "srcEntry": "./ets/entryability/EntryAbility.ets",
     "mainElement": "EntryAbility",
     "deviceTypes": ["phone"],
+    "pages": "$profile:main_pages",
     "abilities": [
       {
         "name": "EntryAbility",

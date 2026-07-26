@@ -24,22 +24,41 @@
 - 缝3 `resolution/android-synthesizer.ts` — 三族合成边（`provenance:'heuristic'`）：`android-intent`（startActivity/startService(Intent(X::class.java))→类）、`compose-route`（navigate→route）、`compose-state`（VM 写状态方法→收集该 VM 的 @Composable，跨类 recomposition，赋值门控 + fan-out cap 8）。
 - 合成边读取：`appgraph/graph-reader.ts:getSynthesizedEdges(synthesizedBy[])`（保留 metadata，`getAllEdges` 丢弃 metadata）。
 
+**平台生产者（Phase H 起）** — 平台差异收敛到 `src/appgraph/platforms/` 一个窄接口，不再散落 if/else：
+
+- `platforms/types.ts:PlatformProducer` 只暴露 4 个真正按平台分派的缝：M1 模块骨架 · M3a import→capability 表 · M3b 清单能力 · U 语义编排。其余（community/Louvain、assign、merge、serialize、schema、能力词表）平台中立，一行不改地复用。
+- `platforms/index.ts` 是注册表（对标 `resolution/frameworks/index.ts`）：`getPlatformProducer` / `registerPlatformProducer` / `detectPlatform`（`--platform auto` 的确定性指纹；并列最高分**报错**要求显式指定，不掷硬币）。
+- `platforms/android.ts` 是**纯转发适配器**，一个 Android pass 都没改写（`build-parity.test.ts` 一行未动仍通过）。
+- `supportedKinds` 是**诚实契约**：生产者只声明自己真的产出的 kind。跨平台 diff 只有在生产者声明该 kind 时，才把"缺失"读作"已迁移"。
+
+**核心图语义（HarmonyOS，Phase H）**：
+
+- `resolution/harmony-navigator.ts` — `harmony-nav` 族。鸿蒙导航是字符串键的（`pushPathByName('OrderDetail')` 1401 处，legacy `router.pushUrl` 仅 19 处），名字→页面只存在于 `route_map.json`，所以静态图在每次页面跳转处断链。该族按 **路由注册表白名单 + 枚举常量回溯**（`RouterMap.ORDER_DETAIL` → `'OrderDetail'`，实测 63% 的调用实参是枚举成员而非字面量）连通，另含 `windowStage.loadContent` → 首屏。**精确或丢弃**：`info.url` / `v.routerName` 这类运行期名字零产边。
+- 门控在 `AppScope/` 存在性，非鸿蒙工程只付一次 `existsSync`。
+
 **应用语义层（A2）** — 导航单源：`appgraph/lift/navigates-from-core.ts:liftNavigatesToFromCore` 读 `compose-route`/`android-intent` 合成边 → Screen→Screen `navigates_to`/`backed_by`（`provenance:'lifted'` + `attrs.liftedFrom`），跟一跳 `calls` 处理帮助方法间接。`detect/compose.ts` 与 `lift/android-navigation.ts` 的字符串扫描已删（Fragment/Dialog 后缀发现保留）。端点按 名/全限定符号/符号尾 三键索引（manifest Activity 的 FQN 符号对齐核心类简名）。
 
 **Agent 消费面**：主通道 `appgraph/annotate.ts` + `mcp/tools.ts` explore 钩子（命中 `.appgraph/` 的 Screen/AppEntry 符号追加一行 `App: Screen '…' (launcher) — navigates_to: …`，无 `.appgraph/` 静默）；辅通道 migrate MCP `app_screens`/`app_nav`/`app_features` + `appgraph` CLI 查询。**不扩 codegraph MCP 默认工具集**（新工具 under-pick）。
 
 ## 上游触点清单（fork 分歧收敛点，merge 上游时重点看这几处）
 
-改上游文件仅这几处，其余全是 `src/appgraph/` + `src/resolution/{android,compose}*` 新文件：
+改上游文件仅这几处，其余全是 `src/appgraph/` + `src/resolution/{android,compose,harmony}*` 新文件：
 - `src/extraction/languages/kotlin.ts` — `extractModifiers` 追加注解简名（缝1）。**未碰 `tree-sitter.ts`**。
+- `src/extraction/languages/arkts.ts` — `DECORATED_MEMBER_TYPES` 加 `class_declaration`，让 `@ObservedV2` 落到 class 节点（鸿蒙全局状态模型的唯一标志物）。
 - `src/resolution/frameworks/index.ts` — +1 import、+1 数组项（注册 `composeResolver`）。
-- `src/resolution/callback-synthesizer.ts` — +1 import、+3 调用、+3 merge 项（接线 `android-synthesizer` 三族，与 goframe/arkui 并列）。
-- `src/mcp/tools.ts` — +1 import、explore 后置钩子 `appGraphFacts`（~10 行）+ `synthEdgeNote` 6 个友好标签 case（compose/android/arkui 族）。
+- `src/resolution/callback-synthesizer.ts` — +2 import、+4 调用、+4 merge 项（接线 `android-synthesizer` 三族 + `harmony-navigator`）。
+- `src/resolution/name-matcher.ts` — ArkTS 内建方法守卫（`ECMASCRIPT_BUILTIN_METHODS` + `receiverNamesAType`）：`arr.push()` 不再绑到 `RouterModule.push`。**这是必要的精度修复**，否则每个鸿蒙工程的 `RouterModule` 单例会吸走全应用的数组操作，制造虚假跨模块依赖并污染 Feature 聚类（Calculator 实测 63 条虚假边 → 0）。
+- `src/mcp/tools.ts` — +1 import、explore 后置钩子 `appGraphFacts`（~10 行）+ `synthEdgeNote` 7 个友好标签 case（compose/android/arkui/harmony-nav 族）。
+- `package.json` — 运行时依赖 +`json5`（hvigor 配置文件是 JSON5，`build-profile.json5` 93% 无法用标准 JSON 解析）。
 
 ## 已知遗留 / 未做
 
 - **真实仓库 A/B 未跑**：A1/A2 用合成 fixture 单测 + 确定性探针验证；`references/samples/`（nowinandroid 等）此环境不存在，agent A/B 待样本补测。
 - **compose 导航召回边界**：纯命名启发式（`navigateToTopic()` 背后无代码）不再臆测——需真实 `navigate`/`startActivity` 核心图看得见（precise-or-drop）。
-- **Phase H（Harmony 生产者）/ Phase I（iOS）未做**：核心 arkui 三族已备；H 重建 `extractors/harmony/` + 从 `verify/target-graph.ts` 抽对称投影。
+- **Phase I（iOS 生产者）未做**：`platforms/` 注册表已就位，新增 iOS = 一个 `platforms/ios.ts` + `extractors/ios/`，无需再动 `build.ts`/`cli.ts`。
+- **鸿蒙 DI / 响应式流未做**：`supportedKinds` 不列相关项，跨平台 diff 会正确报"目标侧无对应"而非"已迁移"。
+- **鸿蒙 `routeInboundRate` 0.13–1.00（10 工程实测中位数约 0.4）**：并非解析缺陷——真实工程大量用 `RouterModule.push({url: info.url})` 这类运行期路由名，静态不可解析。未被指向的注册路由**逐条**进 coverageWarning，不静默。
+- **鸿蒙导航归属止步于「不可归属的跳转」**：写在组件生命周期（`aboutToAppear`）里、或经导出常量实例（`loginUtils.jumpLoginPage()`）调用的跳转，静态归属不到具体页面，一律丢弃。首版曾以「文件」为归属起点把它们摊给该文件所有调用者，制造 31–36% 的假边——见 `docs/design/harmony-producer.md` §5.1。
+- **`str.replace()` 连到同名导入常量**：`resolvedBy:'import'` 的既有行为（导入解析器，非 ArkTS 专有），影响所有 TS/JS 工程。语料上 7 条，未修（改导入解析器需独立基准）。
 - **包名仍 `@colbymchenry/codegraph`**：fork 勿误发布（发布策略由维护者拍板）。
 

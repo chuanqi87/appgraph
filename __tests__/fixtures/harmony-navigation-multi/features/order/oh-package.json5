@@ -1,0 +1,6 @@
+{
+  "name": "order",
+  "version": "1.0.0",
+  "main": "Index.ets",
+  "dependencies": { "lib_foundation": "file:../../commons/lib_foundation" }
+}

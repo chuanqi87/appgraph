@@ -21,7 +21,7 @@
  * that have a target API but no permission behind them.
  */
 
-import { AppEdge, AppNode, makeEdgeId, makeNodeId } from '../schema';
+import { AppEdge, AppNode, AppPlatform, makeEdgeId, makeNodeId } from '../schema';
 import { Node } from '../../types';
 
 /** HarmonyOS translation target for a capability — the LLM's generation anchor. */
@@ -590,16 +590,32 @@ export interface CapabilityDetection {
   stats: { capabilityCount: number; usesEdges: number; taggedModules: number };
 }
 
+/** Per-platform knobs. Defaults keep the Android pipeline byte-identical. */
+export interface ApiCapabilityOptions {
+  /** Platform stamped on the emitted Capability nodes. Default `'android'`. */
+  platform?: AppPlatform;
+  /** import FQN → capability id. Default: the Android `apiToCapability` table. */
+  toCapability?: (importFqn: string) => string | null;
+}
+
 /**
  * Detect capability usage from `import` nodes and tag each owning module.
  *
+ * The scan/aggregate/emit machinery is platform-neutral; only the import→capability
+ * table and the platform stamp differ, so both are injected via `options`.
+ *
  * @param nodes           all code symbols
  * @param nodeToModuleId  node id → owning ArchModule id (from the M1 assignment)
+ * @param options         platform stamp + import matcher (default: Android)
  */
 export function detectCapabilities(
   nodes: Node[],
-  nodeToModuleId: Map<string, string>
+  nodeToModuleId: Map<string, string>,
+  options: ApiCapabilityOptions = {}
 ): CapabilityDetection {
+  const platform: AppPlatform = options.platform ?? 'android';
+  const toCapability = options.toCapability ?? apiToCapability;
+
   // (moduleId, capabilityId) → evidence FQNs (bounded sample).
   const evidence = new Map<string, Set<string>>();
   const moduleCapabilities = new Map<string, Set<string>>();
@@ -608,7 +624,7 @@ export function detectCapabilities(
     if (node.kind !== 'import') continue;
     const moduleId = nodeToModuleId.get(node.id);
     if (moduleId === undefined) continue;
-    const capId = apiToCapability(node.name);
+    const capId = toCapability(node.name);
     if (capId === null) continue;
 
     const key = `${moduleId}\0${capId}`;
@@ -648,11 +664,11 @@ export function detectCapabilities(
         : spec.harmony;
     const matchKey = `capability:${id}`;
     return {
-      id: makeNodeId('android', 'Capability', matchKey),
+      id: makeNodeId(platform, 'Capability', matchKey),
       kind: 'Capability',
       matchKey,
       name: id,
-      platform: 'android',
+      platform,
       subtype: spec.kind,
       provenance: 'lifted',
       fidelity: 'source-project',

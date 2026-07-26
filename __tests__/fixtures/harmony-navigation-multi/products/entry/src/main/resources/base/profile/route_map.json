@@ -1,0 +1,6 @@
+{
+  "routerMap": [
+    { "name": "HomePage", "pageSourceFile": "src/main/ets/views/HomePage.ets",
+      "buildFunction": "HomePageBuilder" }
+  ]
+}

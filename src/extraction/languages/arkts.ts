@@ -31,6 +31,11 @@ import type { Node as SyntaxNode } from 'web-tree-sitter';
 /** Reactive/state decorators that make a member worth flagging (searchable). */
 const DECORATED_MEMBER_TYPES = new Set([
   'struct_declaration',
+  // `@ObservedV2 class GlobalState` — ArkUI V2's deep-observation data class,
+  // and the only marker distinguishing a shared state model from a plain class.
+  // AppStorageV2/PersistenceV2 bind state by TYPE, so without this the whole
+  // global-state layer is invisible (97 such classes in one corpus app alone).
+  'class_declaration',
   'public_field_definition',
   'method_definition',
   'function_declaration',

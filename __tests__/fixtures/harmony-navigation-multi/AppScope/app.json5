@@ -1,0 +1,9 @@
+{
+  "app": {
+// todo: 请配置您应用的包名
+    "bundleName": "com.example.navdemo",
+    "vendor": "example",
+    "versionCode": 1000000,
+    "versionName": "1.0.0",
+  }
+}

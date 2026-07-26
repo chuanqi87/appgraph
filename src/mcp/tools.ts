@@ -1882,6 +1882,15 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'harmony-nav') {
+      const route = m.route ? `\`${String(m.route)}\`` : 'a route';
+      const via = m.via === 'loadContent' ? 'windowStage.loadContent' : `NavPathStack.${String(m.via ?? 'pushPath')}`;
+      return {
+        label: `HarmonyOS Navigation — ${via}(${route}) → the page registered in route_map.json (dynamic dispatch)`,
+        compact: `dynamic: harmony route ${m.route ? String(m.route) : ''}${at}`,
+        registeredAt,
+      };
+    }
     if (m?.synthesizedBy === 'arkui-state') {
       return {
         label: `ArkUI state → build — @State write re-runs the struct's build() (dynamic dispatch)`,

@@ -1,0 +1,1 @@
+{ "app": { "products": [] }, "modules": [ { "name": "mirror_mod", "srcPath": "./mirror_mod" } ] }

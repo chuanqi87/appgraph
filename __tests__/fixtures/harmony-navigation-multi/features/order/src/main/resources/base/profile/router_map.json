@@ -1,0 +1,11 @@
+{
+  "routerMap": [
+    { "name": "OrderDetail",
+      "pageSourceFile": "src/main/ets/views/OrderDetailPage.ets",
+      "buildFunction": "buildOrderDetailPage",
+      "data": { "description": "订单详情" } },
+    { "name": "OrderList",
+      "pageSourceFile": "src/main/ets/views/OrderListPage.ets",
+      "buildFunction": "OrderListPageBuilder" }
+  ]
+}

@@ -11,7 +11,25 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
-- HarmonyOS migration verification now reads the generated ArkTS with the same built-in tree-sitter engine CodeGraph uses everywhere else — recovering the target app's screens, HarmonyOS capabilities, exported types (with their fields), and router navigation from a single code index. This drops the optional ArkAnalyzer dependency, so `migrate verify` needs no extra install.
+- HarmonyOS projects can now be analyzed directly with `appgraph build --platform harmony`, producing the same kind of app graph CodeGraph already builds for Android: modules and their dependencies, app entries, background components and home-screen widgets, deep links, permissions and capabilities, screens, global state models, and page-to-page navigation. `--platform auto` recognizes a HarmonyOS project on its own.
+- HarmonyOS page navigation is now connected end to end. Jumps like `pushPathByName('OrderDetail')` are resolved through the project's route tables to the actual page, including the very common case where the route name is a shared enum constant rather than a literal, and the `windowStage.loadContent` link from an ability to its first screen. Route names that are only known at runtime are deliberately left unresolved and reported, rather than guessed.
+- HarmonyOS global state models are now recovered: classes bound through `AppStorageV2` / `PersistenceV2` become data models with their observed fields and storage keys, and in-memory state is distinguished from state that survives a restart.
+- Adding a new platform is now a single self-contained step. Android, HarmonyOS and future platforms plug into one narrow producer interface, so the shared pipeline — module clustering, feature detection, merging, output — stays platform-neutral.
+- Each platform now declares exactly which kinds of nodes it can extract, so a cross-platform comparison can tell "not present in this app" apart from "not extracted yet".
+- HarmonyOS capability detection now understands the modern `@kit.*` imports most apps use, plus the third-party `axios` networking layer that is far more common in practice than the built-in HTTP module.
+- `codegraph_explore` and `codegraph_node` now label HarmonyOS navigation hops, showing the route name and where it was registered.
+
+### Fixes
+
+- Fixed HarmonyOS module dependencies being silently lost. Config files using single-quoted strings or unquoted keys — both legal in the JSON5 format hvigor uses — previously produced an empty dependency list instead of an error, dropping every dependency of 102 modules across the sample projects with no warning. These files now parse correctly, and anything still unreadable is reported instead of quietly returning partial data.
+- Fixed HarmonyOS page navigation being attributed too broadly. A jump written in a shared helper file was credited to every page that used anything in that file, not just the ones that actually navigate — so a login helper containing both "open a sheet" and "go to the login page" made every caller of either look like it navigated. Roughly a third of the navigation links on the largest sample projects were fabricated this way; they are gone.
+- HarmonyOS pages whose `build()` declares a return type, or wraps its content in a conditional, are now recognized. Previously they were skipped entirely, which on the migration-verification side reported a perfectly good app as having no pages at all.
+- HarmonyOS state models bound with an explicit type argument are no longer missed — several projects' main global state model was silently absent.
+- Pages that share a name across modules are now kept apart. Previously the second module's page was absorbed into the first, so it vanished from the graph along with everything that navigated to it.
+- Building the graph for a large HarmonyOS project is about twice as fast (roughly 27s → 13s on a 44-module app), by preparing route lookups once instead of per route.
+- Projects that use only the older page-list navigation now say so, instead of reporting an empty navigation graph that looked like an app with no navigation at all.
+- Fixed ordinary ArkTS array and string operations being mistaken for navigation calls. Because nearly every HarmonyOS project defines a router singleton with `push`/`pop`/`replace` methods, a plain `list.push(item)` was being linked to it — inventing dependencies between unrelated modules and skewing feature grouping. One sample project had 63 such false links; it now has none, while real router calls are unaffected.
+- Route tables are now located by the name each module declares, rather than an assumed filename, so projects using any of the dozen naming variants in the wild no longer lose their navigation graph.
 
 
 ## [1.3.0] - 2026-07-07

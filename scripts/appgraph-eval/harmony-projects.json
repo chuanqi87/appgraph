@@ -1,0 +1,17 @@
+{
+  "corpus": null,
+  "corpusHelp": "Path to a checkout of the agc-template-market-harmonyos-demos corpus. Left null so no machine-specific path is committed — pass --corpus <dir> or set HARMONY_CORPUS.",
+  "comment": "Validation set for the HarmonyOS producer. Chosen to span four axes: project size (2–44 modules), navigation system (Navigation vs legacy router), JSON5 dirtiness (the single-quote / unquoted-key files that silently lost module dependencies), and cloud usage.",
+  "projects": [
+    { "path": "ToolsTemplate/ComprehensiveTool", "why": "largest (44 modules, 1075 ets) + dirtiest JSON5 (18 files)" },
+    { "path": "NewsTemplate/ComprehensiveNews", "why": "large (40 modules), heavy Navigation use" },
+    { "path": "ShoppingTemplate/ComprehensiveMall", "why": "richest module.json5: deep links + form extension + querySchemes" },
+    { "path": "CarsTemplate/CarBeautyCare", "why": "mid-size, high route density (10 route maps for 14 modules)" },
+    { "path": "EducationTemplate/ArtTraining/Application", "why": "real cloud usage (cloudDatabase / cloudStorage / cloudFunction)" },
+    { "path": "HouseAndHomeTemplate/HomeDecoration", "why": "single-quoted JSON5 values in oh-package dependencies" },
+    { "path": "NavigationTemplate/Metro", "why": "unquoted JSON5 keys — the worst offender (8 dirty files)" },
+    { "path": "NavigationTemplate/BusTravel", "why": "pure Navigation/NavDestination project" },
+    { "path": "ToolsTemplate/Calculator", "why": "clean baseline: @Entry + Tabs, zero dirty JSON5" },
+    { "path": "FoodAndDrinkTemplate/ReservationQueue", "why": "smallest (3 modules)" }
+  ]
+}

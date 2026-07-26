@@ -1,0 +1,13 @@
+{
+  "app": {
+    "products": [ { "name": "default", "compatibleSdkVersion": "5.0.4(16)" } ],
+    "buildModeSet": [ { "name": "debug" }, { "name": "release" }, ]
+  },
+  "modules": [
+    { "name": "entry", "srcPath": "./products/entry",
+      "targets": [ { "name": "default", "applyToProducts": ["default"] } ] },
+    { "name": "order", "srcPath": "./features/order" },
+    { "name": "lib_foundation", "srcPath": "./commons/lib_foundation" },
+    { "name": "feedback", "srcPath": "./components/feedback", },
+  ]
+}

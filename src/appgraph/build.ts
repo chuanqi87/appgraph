@@ -8,19 +8,14 @@
  * migration pipeline's `rebuildStructuralGraph` call it, so their node/edge sets
  * are identical by construction — the merge order here IS the parity contract.
  *
- * v1 covers the Android source pipeline; HarmonyOS/iOS producers arrive in their
- * own phases and plug in behind the same `platform` switch.
+ * The per-platform work (module skeleton, manifest capabilities, import→capability
+ * table, semantic passes) is supplied by a `PlatformProducer`; everything here —
+ * pass order, merge order, id derivation — is platform-neutral and shared.
  */
 
 import { basename, dirname } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import {
-  APP_GRAPH_SCHEMA_VERSION,
-  AppGraph,
-  AppNode,
-  AppNodeKind,
-  AppPlatform,
-} from './schema';
+import { APP_GRAPH_SCHEMA_VERSION, AppGraph, AppNode, AppPlatform } from './schema';
 import { mergeGraphPart } from './merge';
 import { canonicalJson } from './serialize';
 import { CodeSymbolGraph } from './graph-reader';
@@ -28,27 +23,17 @@ import { buildModuleDependencyGraph } from './modules';
 import { buildCommunityOverlay } from './community';
 import { assignNodesToModules } from './modules/assign';
 import { detectCapabilities } from './detect/api-capabilities';
-import { detectManifestCapabilities, ModuleRef } from './detect/manifest-capabilities';
-import { buildSemantics } from './detect/semantics';
-
-/** Node kinds the source-side Android pipeline is able to emit. */
-const SOURCE_SUPPORTED_KINDS: AppNodeKind[] = [
-  'AppEntry',
-  'Screen',
-  'BackgroundComponent',
-  'Permission',
-  'Capability',
-  'ArchModule',
-  'Resource',
-  'DataModel',
-  'Feature',
-];
+import { ModuleRef } from './detect/manifest-capabilities';
+import { getPlatformProducer } from './platforms';
+import type { PlatformProducer } from './platforms/types';
 
 export interface BuildAppGraphOptions {
-  /** Target platform of the analyzed project. v1 builds Android. */
+  /** Platform of the analyzed project. Defaults to Android. */
   platform?: AppPlatform;
   /** Package name to seed the app metadata with (module extraction overrides it if found). */
   packageName?: string;
+  /** Inject a producer directly (tests / custom platforms); default: the registry. */
+  producer?: PlatformProducer;
 }
 
 /**
@@ -61,12 +46,15 @@ export function buildAppGraph(
   reader: CodeSymbolGraph,
   options: BuildAppGraphOptions = {}
 ): AppGraph {
+  const producer = options.producer ?? getPlatformProducer(options.platform ?? 'android');
+
   const graph: AppGraph = {
     schemaVersion: APP_GRAPH_SCHEMA_VERSION,
-    platform: options.platform ?? 'android',
+    platform: producer.platform,
     app: { name: basename(root), packageName: options.packageName ?? '' },
     fidelity: 'source-project',
-    supportedKinds: [...SOURCE_SUPPORTED_KINDS],
+    // Honest per-platform coverage: a producer only claims kinds it truly emits.
+    supportedKinds: [...producer.supportedKinds],
     nodes: [],
     edges: [],
     coverageWarnings: [],
@@ -74,7 +62,7 @@ export function buildAppGraph(
   };
 
   // M1 · ArchModule + depends_on (declared ∪ lifted).
-  const mod = buildModuleDependencyGraph(root, reader);
+  const mod = buildModuleDependencyGraph(root, reader, producer.extractModules);
   if (mod.packageName) graph.app.packageName = mod.packageName;
   mergeGraphPart(graph, { nodes: mod.nodes, edges: mod.edges, warnings: mod.warnings });
 
@@ -83,10 +71,13 @@ export function buildAppGraph(
   const comm = buildCommunityOverlay(archModules, reader);
   mergeGraphPart(graph, { nodes: comm.nodes, edges: comm.edges, warnings: comm.warnings });
 
-  // M3 · capabilities — API/framework imports, then AndroidManifest permissions.
-  const api = detectCapabilities(reader.getAllNodes(), nodeToModuleId(archModules, reader));
+  // M3 · capabilities — API/framework imports, then manifest-declared permissions.
+  const api = detectCapabilities(reader.getAllNodes(), nodeToModuleId(archModules, reader), {
+    platform: producer.platform,
+    toCapability: producer.importCapability,
+  });
   mergeGraphPart(graph, { nodes: api.capabilityNodes, edges: api.edges });
-  const manifest = detectManifestCapabilities(root, moduleRefs(archModules));
+  const manifest = producer.extractManifests(root, moduleRefs(archModules));
   mergeGraphPart(graph, {
     nodes: [...manifest.permissionNodes, ...manifest.capabilityNodes],
     edges: manifest.usesEdges,
@@ -94,7 +85,12 @@ export function buildAppGraph(
   });
 
   // U · source-side semantic enrichment (roles / screens+nav / entities / DI / flows / resources).
-  const semantics = buildSemantics(reader, root, archModules, nodeToModuleId(archModules, reader));
+  const semantics = producer.buildSemantics({
+    reader,
+    root,
+    archModules,
+    nodeToModuleId: nodeToModuleId(archModules, reader),
+  });
   mergeGraphPart(graph, {
     nodes: semantics.nodes,
     edges: semantics.edges,

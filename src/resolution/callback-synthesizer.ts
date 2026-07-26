@@ -31,6 +31,7 @@ import { goframeRouteEdges } from './goframe-synthesizer';
 import { androidFragmentEdges, androidIntentEdges, composeRouteEdges, composeStateEdges } from './android-synthesizer';
 import { circuitNavEdges } from './frameworks/circuit';
 import { createYielder, type MaybeYield } from './cooperative-yield';
+import { harmonyNavigatorEdges } from './harmony-navigator';
 
 const REGISTRAR_NAME = /^(on[A-Z]\w*|subscribe|addListener|addEventListener|register|watch|listen|addCallback)$/;
 const DISPATCHER_NAME = /(emit|trigger|notify|dispatch|fire|publish|flush)/i;
@@ -3332,6 +3333,7 @@ export async function synthesizeCallbackEdges(queries: QueryBuilder, ctx: Resolu
   const arkuiStateEdges = arkuiStateBuildEdges(queries, ctx); await yieldToLoop();
   const arkuiEmitter = arkuiEmitterEdges(ctx); await yieldToLoop();
   const arkuiRoutes = arkuiRouterEdges(ctx); await yieldToLoop();
+  const harmonyNav = harmonyNavigatorEdges(ctx); await yieldToLoop();
   const cppEdges = cppOverrideEdges(queries); await yieldToLoop();
   const ifaceEdges = interfaceOverrideEdges(queries); await yieldToLoop();
   const kotlinExpectActual = kotlinExpectActualEdges(queries); await yieldToLoop();
@@ -3377,6 +3379,7 @@ export async function synthesizeCallbackEdges(queries: QueryBuilder, ctx: Resolu
     ...arkuiStateEdges,
     ...arkuiEmitter,
     ...arkuiRoutes,
+    ...harmonyNav,
     ...cppEdges,
     ...ifaceEdges,
     ...kotlinExpectActual,

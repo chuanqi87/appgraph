@@ -1,0 +1,2 @@
+{ "module": { "name": "order", "type": "har", "deviceTypes": ["phone"],
+              "routerMap": "$profile:router_map" } }

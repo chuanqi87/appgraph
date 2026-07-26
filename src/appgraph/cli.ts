@@ -22,18 +22,40 @@ import { CodeSymbolGraph } from './graph-reader';
 import { AppEdge, AppGraph, AppNode, AppPlatform } from './schema';
 import { appGraphPath } from './paths';
 import { buildAppGraph, readAppGraph, writeAppGraph } from './build';
+import { detectPlatform, getPlatformProducer, listPlatformProducers } from './platforms';
 
-/** v1 producers. auto resolves to android (the only source producer wired today). */
-function resolvePlatform(value: string | undefined): AppPlatform {
+const KNOWN_PLATFORMS: readonly AppPlatform[] = ['android', 'harmony', 'ios'];
+
+function isAppPlatform(value: string): value is AppPlatform {
+  return (KNOWN_PLATFORMS as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve `--platform`. `auto` fingerprints the project root against every
+ * registered producer; an explicit value must name one that is actually wired
+ * (`getPlatformProducer` throws with the list when it isn't).
+ */
+function resolvePlatform(value: string | undefined, root: string): AppPlatform {
   const p = (value ?? 'auto').toLowerCase();
-  if (p === 'auto' || p === 'android') return 'android';
-  if (p === 'harmony' || p === 'ios') {
-    throw new Error(
-      `appgraph build --platform ${p} 尚未接入(HarmonyOS/iOS 生产者在各自阶段落地);` +
-        `当前仅支持 android。目标侧 Harmony 校验请用 “migrate verify”。`
-    );
+
+  if (p === 'auto') {
+    const detected = detectPlatform(root);
+    if (!detected) {
+      const wired = listPlatformProducers().map((x) => x.platform).sort().join('、');
+      throw new Error(
+        `无法自动识别工程平台(已接入:${wired})——未找到 settings.gradle / AppScope 等标志物,` +
+          `请用 --platform 显式指定`
+      );
+    }
+    console.log(`平台自动识别:${detected.platform}(依据 ${detected.evidence})`);
+    return detected.platform;
   }
-  throw new Error(`未知 --platform “${value}”,可选 auto|android|harmony|ios`);
+
+  if (!isAppPlatform(p)) {
+    throw new Error(`未知 --platform “${value}”,可选 auto|${KNOWN_PLATFORMS.join('|')}`);
+  }
+  getPlatformProducer(p); // throws with the wired-platform list when not implemented
+  return p;
 }
 
 async function cmdBuild(
@@ -41,7 +63,7 @@ async function cmdBuild(
   options: { out?: string; platform?: string }
 ): Promise<void> {
   const root = path.resolve(pathArg);
-  const platform = resolvePlatform(options.platform);
+  const platform = resolvePlatform(options.platform, root);
   const outPath = options.out ? path.resolve(options.out) : appGraphPath(root);
 
   // Build/refresh the code-symbol index first, then read from it.
@@ -169,7 +191,7 @@ function buildProgram(): Command {
   program
     .command('build <path>')
     .description('构建应用语义图 → <root>/.appgraph/app-graph.json(与 migrate 结构层同一 builder)')
-    .option('--platform <p>', '工程平台 auto|android|harmony|ios(默认 auto→android)')
+    .option('--platform <p>', '工程平台 auto|android|harmony|ios(默认 auto:按工程标志物自动识别)')
     .option('-o, --out <file>', '应用图 JSON 输出路径(默认 <root>/.appgraph/app-graph.json)')
     .action(async (pathArg: string, options: { out?: string; platform?: string }) => {
       await cmdBuild(pathArg, options);

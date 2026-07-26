@@ -71,3 +71,6 @@ assets/generate-waitlist.py
 
 .claude/plans
 .understand-anything/
+
+# Evaluation output (scripts/appgraph-eval) — regenerated, never committed
+.eval/

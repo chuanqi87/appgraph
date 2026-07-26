@@ -10,7 +10,7 @@
 import { AppEdge, AppNode, CoverageWarning, makeEdgeId } from '../schema';
 import { CodeSymbolGraph } from '../graph-reader';
 import { isTestPath } from '../detect/shared';
-import { extractModuleSkeleton } from './gradle-ext';
+import { ModuleSkeleton, extractModuleSkeleton } from './gradle-ext';
 import { ModuleAssignment, assignNodesToModules } from './assign';
 import { LiftedDependency, aggregateModuleDependencies, liftedConfidence } from './aggregate';
 
@@ -44,12 +44,19 @@ export interface ModuleGraphResult {
 /**
  * Build the module dependency graph for a source project whose code-symbol graph
  * is already open in `reader`.
+ *
+ * Only the DECLARED half is platform-specific (Gradle vs. hvigor build files),
+ * so it is injected via `extractSkeleton`; everything downstream — assignment,
+ * lifted coupling, the declared/lifted merge — operates on the neutral
+ * `ModuleSkeleton` and is shared by every platform. Defaults to Gradle so
+ * existing Android callers are unaffected.
  */
 export function buildModuleDependencyGraph(
   sourceRoot: string,
-  reader: CodeSymbolGraph
+  reader: CodeSymbolGraph,
+  extractSkeleton: (root: string) => ModuleSkeleton = extractModuleSkeleton
 ): ModuleGraphResult {
-  const skeleton = extractModuleSkeleton(sourceRoot);
+  const skeleton = extractSkeleton(sourceRoot);
 
   const codeNodes = reader.getAllNodes();
   const assignment = assignNodesToModules(codeNodes, skeleton.moduleDirs);

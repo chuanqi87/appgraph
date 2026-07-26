@@ -1,0 +1,10 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "main": "",
+  "dependencies": {
+    order:          "file:../../features/order",
+    lib_foundation: 'file:../../commons/lib_foundation',
+    feedback:       "file:../../components/feedback",
+  }
+}

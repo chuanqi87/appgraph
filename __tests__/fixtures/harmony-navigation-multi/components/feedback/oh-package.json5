@@ -1,0 +1,2 @@
+{ "name": "feedback", "main": "Index.ets", "packageType": "InterfaceHar",
+  "dependencies": { "lib_foundation": "file:../../commons/lib_foundation" } }

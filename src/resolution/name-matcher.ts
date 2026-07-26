@@ -1507,6 +1507,29 @@ export function matchMethodCall(
   // name similarity with the containing class. Handles abbreviated variable
   // names like permissionEngine → PermissionRuleEngine.
   if (methodName) {
+    // ArkTS builtin-receiver guard: `arr.push(x)` / `list.pop()` / `s.replace(…)`
+    // call ECMAScript collection builtins, whose receiver is a local array or
+    // string — never a user class. But EVERY HarmonyOS project in the wild ships
+    // a `RouterModule`-style navigation singleton with static `push`/`pop`/
+    // `replace`/`clear`, so the "only one method of this name" shortcut below
+    // binds every array mutation in the app to it. Measured on the AGC template
+    // corpus: all 63 cross-module edges from Calculator's calculator module to
+    // `lib_foundation` were `shuntingYardCalculate → RouterModule.push`, which
+    // then manufactured a strong-but-false implicit module dependency (and, via
+    // the coupling graph, wrong Feature clusters).
+    //
+    // A real static call (`RouterModule.push(...)`) names the class as receiver
+    // and is resolved by Strategy 1 above, so requiring receiver evidence here
+    // costs nothing and follows the file's precise-or-drop rule. Scoped to
+    // ArkTS: the same hazard exists in TS/JS, but the fix is only measured here.
+    if (
+      ref.language === 'arkts' &&
+      ECMASCRIPT_BUILTIN_METHODS.has(methodName) &&
+      !receiverNamesAType(objectOrClass, ref, context)
+    ) {
+      return null;
+    }
+
     const methodCandidates = context.getNodesByName(methodName!);
     // Ubiquitous-method ceiling (#999): a method name re-declared across a
     // vendored theme/SDK (Metronic's `init`/`update`/… on every widget) yields
@@ -1762,6 +1785,55 @@ export function matchFuzzy(
 /** ArkUI attribute-helper decorators a `.attr(...)` chain may resolve to. */
 const ARKUI_ATTRIBUTE_DECORATORS = new Set(['Extend', 'Styles', 'AnimatableExtend', 'Builder']);
 
+/**
+ * ECMAScript collection/string builtins whose receiver is a language primitive,
+ * not a user type. Bare-name matching must never bind these to a same-named
+ * user method without receiver evidence (see the guard in `matchMethodCall`).
+ */
+const ECMASCRIPT_BUILTIN_METHODS = new Set([
+  // Array mutators + accessors
+  'push', 'pop', 'shift', 'unshift', 'splice', 'slice', 'concat', 'join',
+  'reverse', 'sort', 'fill', 'flat', 'flatMap', 'indexOf', 'lastIndexOf',
+  'includes', 'find', 'findIndex', 'findLast', 'findLastIndex', 'filter',
+  'map', 'forEach', 'reduce', 'reduceRight', 'some', 'every', 'at',
+  // String
+  'charAt', 'charCodeAt', 'codePointAt', 'endsWith', 'startsWith', 'match',
+  'matchAll', 'normalize', 'padEnd', 'padStart', 'repeat', 'replace',
+  'replaceAll', 'search', 'split', 'substring', 'substr', 'toLowerCase',
+  'toUpperCase', 'trim', 'trimEnd', 'trimStart',
+  // Map / Set / WeakMap
+  'get', 'set', 'has', 'delete', 'clear', 'add', 'keys', 'values', 'entries',
+  // Promise / iterator / object protocol
+  'then', 'catch', 'finally', 'next', 'toString', 'valueOf', 'hasOwnProperty',
+]);
+
+/**
+ * Whether the receiver expression names a declared type (class/struct/interface/
+ * enum) — the evidence that a builtin-named call is really a static/typed call
+ * rather than an operation on a language primitive. `this` counts: a method
+ * calling `this.push(...)` is inside the type that declares it.
+ */
+function receiverNamesAType(
+  receiver: string | undefined,
+  ref: UnresolvedRef,
+  context: ResolutionContext
+): boolean {
+  if (!receiver) return false;
+  if (receiver === 'this' || receiver === 'super') return true;
+  // EXACT name only. Capitalizing the receiver first ("does `replace` look like
+  // the type `Replace`?") reads a lowercase local as a static reference, which
+  // is precisely the confusion this guard exists to stop: a project holding
+  // `export const replace: Replace[]` made every `x.replace(...)` look
+  // type-anchored again. A real static call writes the type's own name.
+  return context
+    .getNodesByName(receiver)
+    .some(
+      (n) =>
+        n.language === ref.language &&
+        (n.kind === 'class' || n.kind === 'struct' || n.kind === 'interface' || n.kind === 'enum')
+    );
+}
+
 export function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
@@ -1800,6 +1872,41 @@ export function matchReference(
       original: ref,
       targetNodeId: chosen[0]!.id,
       confidence: 0.85,
+      resolvedBy: 'exact-match',
+    };
+  }
+
+  // ArkTS ECMAScript builtins reached as a BARE name. `this.expressions.push(x)`
+  // reaches the matcher as plain `push` (the receiver chain is not carried), so
+  // `matchByExactName` happily binds it to the single user METHOD of that name.
+  // In HarmonyOS apps that method is essentially always the project's
+  // `RouterModule.push`/`pop`/`replace` navigation singleton — a pattern every
+  // project in the AGC template corpus ships — so every array mutation in the
+  // app manufactures a cross-module call edge. Measured on Calculator: 63 bogus
+  // `module_standard_calculator → lib_foundation` edges, which then produced a
+  // strong-but-false implicit module dependency and skewed Feature clustering.
+  //
+  // A genuine call names its receiver (`RouterModule.push(...)`, `this.push()`)
+  // and resolves through the dotted paths above. Here we allow only a free
+  // FUNCTION legitimately named `filter`/`find` — the sole callable a bare name
+  // can mean. Anything else (a method, or a non-callable `constant` / `property`
+  // / `enum_member` / `variable`) is dropped rather than guessed: admitting
+  // non-callables just swaps one family of bogus `calls` edges for another —
+  // measured, it re-created 39 of them, e.g. `downloadTask.delete(cb)` binding
+  // to a UI-label `enum_member` named `delete` in an unrelated module.
+  if (
+    ref.language === 'arkts' &&
+    !ref.referenceName.includes('.') &&
+    ECMASCRIPT_BUILTIN_METHODS.has(ref.referenceName)
+  ) {
+    const functions = applyLanguageGate(context.getNodesByName(ref.referenceName), ref).filter(
+      (n) => n.kind === 'function'
+    );
+    if (functions.length !== 1) return null;
+    return {
+      original: ref,
+      targetNodeId: functions[0]!.id,
+      confidence: 0.6,
       resolvedBy: 'exact-match',
     };
   }
