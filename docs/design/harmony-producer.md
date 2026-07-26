@@ -126,7 +126,7 @@ precise-or-drop 惯例。真实静态调用 `RouterModule.push(...)` 由 Strateg
 | Project | mods | ets | det | modRec | depRec | permRec | routeReg | routeScr | routeIn | screens | nav | data | caps | json5 | warns | secs |
 |---|---:|---:|:---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | ComprehensiveTool | 44 | 1075 | ✓ | 44/44 | 56/56 | 19/19 | 121/121 | 0.992 | 0.446 | 124 | 68 | 29 | 23 | 0 | 72 | 13 |
-| ComprehensiveNews | 39 | 873 | ✓ | 39/39 | 139/139 | 9/9 | 61/61 | 1 | 0.262 | 70 | 30 | 28 | 17 | 0 | 43 | 6.3 |
+| ComprehensiveNews | 39 | 873 | ✓ | 39/39 | 139/139 | 9/9 | 61/61 | 1 | 0.279 | 70 | 36 | 28 | 17 | 0 | 43 | 5.6 |
 | ComprehensiveMall | 32 | 570 | ✓ | 32/32 | 80/80 | 9/9 | 54/54 | 0.963 | 0.389 | 57 | 40 | 18 | 14 | 0 | 35 | 3.9 |
 | CarBeautyCare | 14 | 174 | ✓ | 14/14 | 38/38 | 3/3 | 22/22 | 1 | 0.409 | 26 | 12 | 2 | 8 | 0 | 13 | 1 |
 | ArtTraining | 12 | 201 | ✓ | 12/12 | 29/29 | 5/5 | 20/20 | 1 | 0.55 | 25 | 21 | 4 | 8 | 0 | 12 | 1.3 |
@@ -134,7 +134,7 @@ precise-or-drop 惯例。真实静态调用 `RouterModule.push(...)` 由 Strateg
 | Metro | 8 | 104 | ✓ | 8/8 | 19/19 | 3/3 | 16/16 | 1 | 0.25 | 17 | 6 | 2 | 7 | 0 | 13 | 0.7 |
 | BusTravel | 8 | 127 | ✓ | 8/8 | 12/12 | 3/3 | 24/24 | 1 | 0.125 | 25 | 5 | 2 | 13 | 0 | 22 | 0.8 |
 | Calculator | 8 | 95 | ✓ | 8/8 | 11/11 | 0/0 | 3/3 | 1 | 1 | 9 | 4 | 2 | 2 | 0 | 0 | 0.8 |
-| ReservationQueue | 2 | 138 | ✓ | 2/2 | 1/1 | 3/3 | 8/8 | 1 | 0.375 | 11 | 6 | 4 | 5 | 0 | 7 | 1 |
+| ReservationQueue | 2 | 138 | ✓ | 2/2 | 1/1 | 3/3 | 8/8 | 1 | 0.5 | 11 | 7 | 4 | 5 | 0 | 6 | 0.8 |
 
 **硬性判据全部通过**：确定性（两次构建字节一致）、模块召回 179/179、依赖召回 406/406、
 权限召回 58/58、路由注册表召回 348/348、JSON5 健康度 0 失败、anti-silence。
@@ -210,6 +210,28 @@ UI 标签枚举成员。修复：收紧到 `kind === 'function'`；`receiverName
   ComprehensiveTool 上 15.7s 构建里 14.5s 花在这里。改为构建一次索引：**27s → 13s**。
 - 纯 legacy-router 工程（`main_pages.json`，无 Navigation 路由表）注册表为空，所有基于注册表的
   检查都被平凡满足 → 零导航边零告警，与"该应用确实没有跳转"无法区分。已补显式告警。
+
+### 5.8 条件路由只取第一个候选 token
+
+`ROUTE_TOKEN_RE` 原先只取实参里**第一个**候选，遇到条件路由会取错甚至全丢：
+
+```ts
+RouterUtils.pushPathByName(cardData.type === NewsEnum.Broadcast ? RouterMap.AUDIO_DETAILS
+                                                               : RouterMap.VIDEO_PROGRAM_DETAILS, params)
+```
+
+第一个 `Ident.MEMBER` 是**条件里**的 `NewsEnum.Broadcast`,它不在路由注册表 → 整个调用点零边,
+而两个分支都是真实目标。全语料 1829 个跳转调用点中,含条件分支的约 3%–5%,条件枚举抢先的 2–3 处。
+
+修复:收集实参内**全部**候选逐个查注册表,并把扫描范围收紧到**第一个实参**(路由名恒为首参,
+后面的 `param`/`onPop`/`animated` 常带无关枚举,扫进去会给一次跳转配上第二个错目标)。
+精度不变——白名单机制照旧,条件里的非路由枚举自然落空。ComprehensiveNews 合成边 68 → 72。
+
+**Android 侧无此暴露面**(已实测):`android-synthesizer.ts` 的 `NAVIGATE_RE` 锚定在 `navigate(`
+紧邻位置,而 Compose Navigation 惯用单参字面量/类型化 key。nowinandroid 的 27 个 `navigate(`
+调用点中含 `if`/`when` 分支的为 **0**,未命中的 2 处是转发封装 `navigate(navKey)` 和一个函数声明。
+鸿蒙之所以有,是因为 `pushPathByName(name, param, onPop, animated)` 路由名只是多个位置参数之一,
+且各工程普遍再包一层 `RouterUtils`,助长了计算式取值。
 
 ---
 

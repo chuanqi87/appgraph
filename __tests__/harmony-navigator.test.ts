@@ -81,6 +81,31 @@ describe('route resolution', () => {
     expect(byId.get(e.target)!.name).toBe('Index');
   });
 
+  it('resolves BOTH branches of a conditional route argument', () => {
+    // `push({ url: kind === OrderKind.Detail ? RouterMap.ORDER_DETAIL
+    //                                        : RouterMap.ORDER_LIST })`
+    // Taking only the first candidate token grabs the CONDITION's enum
+    // (`OrderKind.Detail`), which is not a route — so the whole call site used
+    // to yield nothing while both branches were real destinations.
+    const fromOpenByKind = edges
+      .filter((e) => byId.get(e.source)?.name === 'openByKind')
+      .map((e) => String(e.metadata.route))
+      .sort();
+    expect(fromOpenByKind).toEqual(['OrderDetail', 'OrderList']);
+  });
+
+  it('does not treat a non-route enum in the condition as a destination', () => {
+    // `OrderKind.Detail` resolves to 'detail', which is not in the registry.
+    expect(edges.some((e) => e.metadata.route === 'detail')).toBe(false);
+  });
+
+  it('ignores enums in the trailing arguments, not just the route argument', () => {
+    // Only the FIRST argument is scanned; `param` / `onPop` / `animated` often
+    // carry unrelated enum values that must not pair a jump with a 2nd target.
+    const openDetail = edges.filter((e) => byId.get(e.source)?.name === 'openDetail');
+    expect(openDetail.map((e) => String(e.metadata.route))).toEqual(['OrderDetail']);
+  });
+
   it('tags every edge with its family, route and wiring site', () => {
     expect(edges.length).toBeGreaterThan(0);
     for (const e of edges) {

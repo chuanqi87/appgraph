@@ -28,6 +28,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pages that share a name across modules are now kept apart. Previously the second module's page was absorbed into the first, so it vanished from the graph along with everything that navigated to it.
 - Building the graph for a large HarmonyOS project is about twice as fast (roughly 27s → 13s on a 44-module app), by preparing route lookups once instead of per route.
 - Projects that use only the older page-list navigation now say so, instead of reporting an empty navigation graph that looked like an app with no navigation at all.
+- Conditional page jumps now resolve every branch. A jump written as `goTo(isX ? PageA : PageB)` previously produced no link at all when the condition itself referenced an unrelated constant, losing both real destinations.
 - Fixed ordinary ArkTS array and string operations being mistaken for navigation calls. Because nearly every HarmonyOS project defines a router singleton with `push`/`pop`/`replace` methods, a plain `list.push(item)` was being linked to it — inventing dependencies between unrelated modules and skewing feature grouping. One sample project had 63 such false links; it now has none, while real router calls are unaffected.
 - Route tables are now located by the name each module declares, rather than an assumed filename, so projects using any of the dozen naming variants in the wild no longer lose their navigation graph.
 

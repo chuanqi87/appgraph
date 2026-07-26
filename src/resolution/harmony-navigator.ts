@@ -37,26 +37,32 @@ const NAV_CALL_RE =
   /\.(pushPathByName|pushDestinationByName|replacePathByName|popToName|pushPath|pushDestination|replacePath|push|replace)\s*\(/g;
 
 /**
- * The first route-name candidate after a nav call: a string literal, or a
- * `Enum.MEMBER` reference. An optional `name:`/`url:` key prefix covers the
- * `RouterModule.push({ url: RouterMap.X })` wrapper every project defines.
+ * Route-name candidates: string literals and `Enum.MEMBER` references. An
+ * optional `name:`/`url:` key prefix covers the `RouterModule.push({ url:
+ * RouterMap.X })` wrapper every project defines. Global — ALL candidates in the
+ * route argument are considered, not just the first (see `routeCandidates`).
  */
 const ROUTE_TOKEN_RE =
-  /(?:\b(?:name|url|routerName|pageName)\s*:\s*)?(?:'([\w-]+)'|"([\w-]+)"|\b([A-Z]\w*)\.([A-Za-z_]\w*))/;
+  /(?:\b(?:name|url|routerName|pageName)\s*:\s*)?(?:'([\w-]+)'|"([\w-]+)"|\b([A-Z]\w*)\.([A-Za-z_]\w*))/g;
 
 /** Hard cap on how far a call's argument list is scanned. */
 const TOKEN_WINDOW = 240;
 
+/** Most candidates to consider in one route argument (ternary chains stay small). */
+const MAX_ROUTE_CANDIDATES = 6;
+
 /**
- * The text of THIS call's argument list — from just after `(` to its matching
- * `)`, capped.
+ * The text of the nav call's FIRST argument — the route name.
  *
- * A fixed-length window instead runs past the closing paren into whatever
- * follows, so `list.push(item)` could pick up a route name from the NEXT
- * statement and invent a jump (`addToList → ResultPage`). Balancing the parens
- * keeps a match inside the call that actually navigates.
+ * Two bounds, both load-bearing:
+ *   - the matching `)`, so a fixed-length window cannot run past the call into
+ *     the next statement (`list.push(item)` once picked up a route name from the
+ *     following method and invented `addToList → ResultPage`);
+ *   - the first top-level `,`, so the trailing `param` / `onPop` / `animated`
+ *     arguments are not scanned. Those routinely carry unrelated enum values,
+ *     and scanning them could pair a jump with a second, wrong destination.
  */
-function callArguments(content: string, start: number): string {
+function routeArgument(content: string, start: number): string {
   const limit = Math.min(content.length, start + TOKEN_WINDOW);
   let depth = 1;
   for (let i = start; i < limit; i++) {
@@ -64,9 +70,53 @@ function callArguments(content: string, start: number): string {
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') {
       if (--depth === 0) return content.slice(start, i);
+    } else if (c === ',' && depth === 1) {
+      return content.slice(start, i);
     }
   }
   return content.slice(start, limit);
+}
+
+/** One resolved route name plus how it was recovered. */
+interface RouteCandidate {
+  route: string;
+  resolvedBy: 'literal' | 'enum';
+}
+
+/**
+ * Every route name the argument can yield, in source order.
+ *
+ * Taking only the FIRST candidate loses real destinations and can pick the wrong
+ * token entirely: in `pushPathByName(cardData.type === NewsEnum.Broadcast ?
+ * RouterMap.AUDIO_DETAILS : RouterMap.VIDEO_PROGRAM_DETAILS, params)` the first
+ * `Ident.MEMBER` is the CONDITION's enum, so that site produced no edge at all
+ * while both branches were real destinations. Collecting all candidates and letting
+ * the route registry decide keeps precision (a non-route token simply misses)
+ * while recovering every branch.
+ */
+function routeCandidates(argument: string, enumIndex: Map<string, string>): RouteCandidate[] {
+  const out: RouteCandidate[] = [];
+  const seen = new Set<string>();
+  ROUTE_TOKEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ROUTE_TOKEN_RE.exec(argument)) && out.length < MAX_ROUTE_CANDIDATES) {
+    const literal = m[1] ?? m[2];
+    let route: string | undefined;
+    let resolvedBy: RouteCandidate['resolvedBy'];
+    if (literal) {
+      route = literal;
+      resolvedBy = 'literal';
+    } else if (m[3] && m[4]) {
+      route = enumIndex.get(`${m[3]}.${m[4]}`);
+      resolvedBy = 'enum';
+    } else {
+      continue;
+    }
+    if (!route || seen.has(route)) continue;
+    seen.add(route);
+    out.push({ route, resolvedBy });
+  }
+  return out;
 }
 
 /** `windowStage.loadContent('views/Index')` — Ability → first screen. */
@@ -124,48 +174,39 @@ function collectNavEdges(
   let m: RegExpExecArray | null;
   while ((m = NAV_CALL_RE.exec(content))) {
     const verb = m[1]!;
-    const window = callArguments(content, m.index + m[0].length);
-    const token = ROUTE_TOKEN_RE.exec(window);
-    if (!token) continue;
-
-    const literal = token[1] ?? token[2];
-    let routeName: string | undefined;
-    let resolvedBy: 'literal' | 'enum';
-    if (literal) {
-      routeName = literal;
-      resolvedBy = 'literal';
-    } else if (token[3] && token[4]) {
-      routeName = enumIndex.get(`${token[3]}.${token[4]}`);
-      resolvedBy = 'enum';
-    } else {
-      continue;
-    }
-    // The registry IS the whitelist: an unknown name is dropped, never guessed.
-    if (!routeName) continue;
-    const route = registry.byName.get(routeName);
-    if (!route) continue;
+    const argument = routeArgument(content, m.index + m[0].length);
+    const candidates = routeCandidates(argument, enumIndex);
+    if (candidates.length === 0) continue;
 
     const line = lineAt(content, m.index);
     const encl = enclosingFn(fns, line);
     if (!encl) continue;
 
-    const dest = resolveDestinationStruct(route, ctx);
-    if (!dest) continue;
+    for (const candidate of candidates) {
+      // The registry IS the whitelist: an unknown name is dropped, never guessed.
+      // This is also what makes scanning ALL candidates safe — a condition's enum
+      // or an unrelated constant simply fails the lookup.
+      const route = registry.byName.get(candidate.route);
+      if (!route) continue;
 
-    push(out, seen, perFn, {
-      source: encl.id,
-      target: dest.id,
-      kind: 'calls',
-      line,
-      provenance: 'heuristic',
-      metadata: {
-        synthesizedBy: 'harmony-nav',
-        route: routeName,
-        via: verb,
-        resolvedBy,
-        registeredAt: `${route.pageFile}:${dest.startLine}`,
-      },
-    });
+      const dest = resolveDestinationStruct(route, ctx);
+      if (!dest) continue;
+
+      push(out, seen, perFn, {
+        source: encl.id,
+        target: dest.id,
+        kind: 'calls',
+        line,
+        provenance: 'heuristic',
+        metadata: {
+          synthesizedBy: 'harmony-nav',
+          route: candidate.route,
+          via: verb,
+          resolvedBy: candidate.resolvedBy,
+          registeredAt: `${route.pageFile}:${dest.startLine}`,
+        },
+      });
+    }
   }
 }
 
