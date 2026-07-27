@@ -1,11 +1,22 @@
 {
   "routerMap": [
-    { "name": "OrderDetail",
+    {
+      "name": "OrderDetail",
       "pageSourceFile": "src/main/ets/views/OrderDetailPage.ets",
       "buildFunction": "buildOrderDetailPage",
-      "data": { "description": "订单详情" } },
-    { "name": "OrderList",
+      "data": {
+        "description": "订单详情"
+      }
+    },
+    {
+      "name": "OrderList",
       "pageSourceFile": "src/main/ets/views/OrderListPage.ets",
-      "buildFunction": "OrderListPageBuilder" }
+      "buildFunction": "OrderListPageBuilder"
+    },
+    {
+      "name": "ReusedAddress",
+      "pageSourceFile": "src/main/ets/views/ReusedAddressPage.ets",
+      "buildFunction": "buildReusedAddressPage"
+    }
   ]
 }

@@ -235,7 +235,38 @@ RouterUtils.pushPathByName(cardData.type === NewsEnum.Broadcast ? RouterMap.AUDI
 
 ---
 
-## 6. 复现
+## 6. 页面清单完整性（与导航覆盖是两回事）
+
+导航边受运行期路由名限制（§4「怎么读这张表」），但**页面总数是完整的**。用三个互相独立的
+信号各数一遍，与产出的 Screen 集合逐个方向比对：
+
+| Project | @Entry | NavDestination struct | route 注册页 | appgraph Screen | 漏 @Entry | 漏 NavDest | 路由未覆盖 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ComprehensiveTool | 5 | 119 | 118 | 125 | 0 | 0 | 0 |
+| ComprehensiveNews | 5 | 60 | 57 | 70 | 0 | 0 | 0 |
+| ComprehensiveMall | 2 | 54 | 53 | 58 | 0 | 0 | 0 |
+| CarBeautyCare | 2 | 25 | 22 | 26 | 0 | 0 | 0 |
+| ArtTraining | 3 | 21 | 20 | 25 | 0 | 0 | 0 |
+| HomeDecoration | 1 | 23 | 19 | 25 | 0 | 0 | 0 |
+| Metro | 1 | 15 | 16 | 17 | 0 | 0 | 0 |
+| BusTravel | 1 | 24 | 24 | 25 | 0 | 0 | 0 |
+| Calculator | 2 | 6 | 3 | 9 | 0 | 0 | 0 |
+| ReservationQueue | 1 | 2 | 8 | 11 | 0 | 0 | 0 |
+
+**零遗漏**：10 个工程、348 条注册路由 **100%** 都有对应 Screen，`@Entry` 与 NavDestination
+struct 也一个不漏。Screen 数高于任一单列，是因为它是三源并集——一个页面可能只在其中一源出现
+（如只走 `@Entry` 的卡片入口、或注册了路由但 `build()` 不以 NavDestination 为根的页面）。
+
+一类曾被丢弃的页面已补回：路由指向的文件里只有一个 `@Builder`，渲染的是**其他模块 import
+进来的**组件，该文件本身没有 struct。这类页面确实存在且可导航，现在计入并标
+`subtype: 'declared-route'` + `attrs.implementation: 'unresolved'`，同时保留告警。若同名的真实
+Screen 已存在（`features/points/…/UpdateAddressPage.ets` 只是 `lib_widget` 同名组件的三行封装），
+则折叠到那个 Screen 上而不是造一个重复页面。
+
+> 反向也确认过没有虚增：ReservationQueue 的 11 个 Screen = 8 个注册路由 + 2 个 `@Entry`
+> （含桌面卡片入口）+ 1 个 NavDestination，全是真页面。
+
+## 7. 复现
 
 ```bash
 npm run build

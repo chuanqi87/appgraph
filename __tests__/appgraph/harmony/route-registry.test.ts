@@ -53,7 +53,12 @@ describe('route registry', () => {
   const registry = buildRouteRegistry(project);
 
   it('merges routes from every module into one global namespace', () => {
-    expect([...registry.byName.keys()].sort()).toEqual(['HomePage', 'OrderDetail', 'OrderList']);
+    expect([...registry.byName.keys()].sort()).toEqual([
+      'HomePage',
+      'OrderDetail',
+      'OrderList',
+      'ReusedAddress',
+    ]);
   });
 
   it('takes the profile FILENAME from module.json5, not a hardcoded name', () => {
@@ -82,7 +87,7 @@ describe('route registry', () => {
   });
 
   it('reports honest stats', () => {
-    expect(registry.stats.routes).toBe(3);
+    expect(registry.stats.routes).toBe(4);
     expect(registry.stats.routeMapFiles).toBe(2);
     expect(registry.stats.modulesWithRouterMap).toBe(2);
     expect(registry.stats.duplicates).toBe(0);

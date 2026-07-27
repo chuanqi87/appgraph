@@ -26,7 +26,7 @@ import {
   ambiguousScreenNames,
   harmonyScreenMatchKey,
 } from '../extractors/harmony/surface';
-import type { HarmonyRouteRegistry } from '../extractors/harmony/route-map';
+import type { HarmonyRoute, HarmonyRouteRegistry } from '../extractors/harmony/route-map';
 import { isNavDestinationPage } from './arkts-source';
 import type { ModuleRef } from './manifest-capabilities';
 import type { ReadCode } from './shared';
@@ -130,18 +130,78 @@ export function detectHarmonyPages(
     return screens.get(id)!;
   };
 
+  /**
+   * A page known only from its route declaration — the page file holds just a
+   * `@Builder` that renders a component imported from another module, so it
+   * declares no struct of its own. The page still EXISTS and is navigable, so it
+   * is counted; `implementation: 'unresolved'` tells a consumer it could not be
+   * bound to a symbol.
+   *
+   * Identity is the file stem. That deliberately COLLAPSES onto a real Screen of
+   * the same name when one exists, because that is the shared component being
+   * re-used: `features/points/…/UpdateAddressPage.ets` is a three-line builder
+   * over `lib_widget`'s `UpdateAddressPage`, and folding the route onto that
+   * Screen is the right answer rather than inventing a second page. When no such
+   * Screen exists, a standalone declared-only node is emitted.
+   *
+   * (Following the builder's `calls` edge would be more direct, but the code
+   * graph does not resolve cross-module component instantiation — measured: that
+   * builder has no outgoing `calls` at all.)
+   */
+  const recordDeclaredOnly = (route: HarmonyRoute, routeName: string): void => {
+    const stem = route.pageFile.split('/').pop()!.replace(/\.ets$/, '');
+    const matchKey = harmonyScreenMatchKey(stem, route.pageFile, ambiguous);
+    const id = makeNodeId('harmony', 'Screen', matchKey);
+    const existing = screens.get(id);
+    const routes = [
+      ...new Set([...((existing?.attrs?.routes as string[] | undefined) ?? []), routeName]),
+    ].sort();
+    if (existing) {
+      screens.set(id, { ...existing, attrs: { ...existing.attrs, routes } });
+      return;
+    }
+    screens.set(id, {
+      id,
+      kind: 'Screen',
+      matchKey,
+      name: stem,
+      platform: 'harmony',
+      subtype: 'declared-route',
+      platformRef: { file: route.pageFile },
+      provenance: 'manifest',
+      fidelity: 'source-project',
+      // Declared with certainty, but not bound to a symbol — below a located page.
+      confidence: 0.8,
+      attrs: {
+        file: route.pageFile,
+        routes,
+        buildFunction: route.buildFunction,
+        implementation: 'unresolved',
+      },
+    });
+    const set = sources.get(id) ?? new Set<string>();
+    set.add('route');
+    sources.set(id, set);
+  };
+
   // --- 1. Route registry (authoritative) ------------------------------------
   const routeIndex = buildRouteResolutionIndex(reader, nodes);
   for (const [name, route] of registry.byName) {
     const struct = resolveRouteStruct(routeIndex, structsByFile, route.pageFile, route.buildFunction);
     if (!struct) {
+      // The page file declares no struct of its own — its `@Builder` renders a
+      // component imported from another module. The page still EXISTS and is
+      // navigable (a route declaration is a manifest fact), so it must be
+      // counted; only its implementation is unlocated. Dropping it instead made
+      // the screen inventory silently short.
       routesWithoutStruct++;
       warnings.push({
         message:
           `路由 ${name} 注册了页面 ${route.pageFile}(buildFunction ${route.buildFunction}),` +
-          `但在代码图中未找到对应的组件 struct——该页面无法定位实现`,
+          `但该文件未声明组件 struct(实现可能在其他模块)——页面已计入,但无法定位到具体实现`,
         ref: { file: route.sourceFile, symbol: name },
       });
+      recordDeclaredOnly(route, name);
       continue;
     }
     record(struct, 'route', { route: name, buildFunction: route.buildFunction });

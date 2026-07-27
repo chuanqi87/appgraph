@@ -70,11 +70,40 @@ describe('attribution walks from the jumping function', () => {
   });
 });
 
-describe('page recovery is not blocked by a declared return type', () => {
+describe('page inventory is complete', () => {
   it('recovers a page whose build() declares `: void`', () => {
     // `build(): void {` — 195 corpus uses; this used to read as "not a page".
     const screens = graph.nodes.filter((n) => n.kind === 'Screen').map((n) => n.name);
     expect(screens).toContain('SheetOnlyPage');
+  });
+
+  it('counts a route whose page file declares no struct of its own', () => {
+    // `ReusedAddressPage.ets` is a three-line @Builder over a component imported
+    // from another module. The page exists and is navigable, so dropping it made
+    // the screen inventory silently short.
+    const declared = graph.nodes.find(
+      (n) => n.kind === 'Screen' && n.subtype === 'declared-route'
+    );
+    expect(declared?.name).toBe('ReusedAddressPage');
+    expect(declared?.attrs?.routes).toEqual(['ReusedAddress']);
+    // Counted, but honestly marked as not bound to a symbol.
+    expect(declared?.attrs?.implementation).toBe('unresolved');
+    expect(declared?.confidence).toBeLessThan(1);
+  });
+
+  it('still reports the unlocated implementation as a coverage warning', () => {
+    expect(
+      graph.coverageWarnings.some((w) => w.message.includes('未声明组件 struct'))
+    ).toBe(true);
+  });
+
+  it('EVERY registered route is covered by some Screen', () => {
+    const covered = new Set(
+      graph.nodes
+        .filter((n) => n.kind === 'Screen')
+        .flatMap((n) => (n.attrs?.routes as string[] | undefined) ?? [])
+    );
+    expect([...covered].sort()).toEqual(['HomePage', 'OrderDetail', 'OrderList', 'ReusedAddress']);
   });
 });
 
